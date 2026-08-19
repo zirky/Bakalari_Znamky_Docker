@@ -36,6 +36,7 @@ class Grade(Base):
     subject: Mapped[str] = mapped_column(String(120), index=True)
     grade_value: Mapped[str] = mapped_column(String(20))
     grade_date: Mapped[date] = mapped_column(Date, index=True)
+    school_year: Mapped[str | None] = mapped_column(String(9), nullable=True, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     source: Mapped[str] = mapped_column(String(30), default='manual')
     active_in_sync: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
