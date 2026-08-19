@@ -1,0 +1,20 @@
+services:
+  backend:
+    build: ./backend
+    container_name: bakalari-rewards-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8080:8000"
+    volumes:
+      - ./data:/data
+
+  frontend:
+    build: ./frontend
+    container_name: bakalari-rewards-frontend
+    restart: unless-stopped
+    ports:
+      - "5273:5173"
+    depends_on:
+      - backend
