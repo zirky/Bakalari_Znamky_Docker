@@ -1,0 +1,1117 @@
+from datetime import date, datetime
+import json
+from uuid import uuid4
+
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
+from pydantic import BaseModel
+from sqlalchemy import func
+from sqlalchemy.orm import Session as DbSession
+
+from .auth import COOKIE_NAME, current_parent, delete_session, get_db
+from .models import (
+    AppSetting,
+    Grade,
+    Payout,
+    PayoutAudit,
+    Reward,
+    RewardRule,
+    SyncRun,
+    SyncState,
+)
+from .services.bakalari import BakalariService
+from .services.lnbits import (
+    LnAddressResolutionError,
+    LnbitsPaymentError,
+    LnbitsService,
+)
+from .services.rates import RateService
+
+
+router = APIRouter(prefix='/api')
+
+
+class RuleIn(BaseModel):
+    grade_value: str
+    reward_czk: int
+    active: bool = True
+
+
+class SyncIn(BaseModel):
+    from_date: date | None = None
+    mode: str = 'normal'
+
+
+class SettingsIn(BaseModel):
+    start_date: str = '2026-01-01'
+    sync_interval: str = 'manual'
+    payout_threshold_czk: int = 100
+    ln_address: str = ''
+    payout_mode: str = 'disabled'
+
+
+class PayoutDraftIn(BaseModel):
+    pass
+
+
+def _get_setting(
+    db: DbSession,
+    key: str,
+    default: str = '',
+) -> str:
+    item = db.query(AppSetting).filter_by(key=key).first()
+    return item.value if item and item.value is not None else default
+
+
+def _set_setting(
+    db: DbSession,
+    key: str,
+    value: str,
+) -> None:
+    item = db.query(AppSetting).filter_by(key=key).first()
+
+    if item:
+        item.value = value
+    else:
+        db.add(AppSetting(key=key, value=value))
+
+
+def _get_sync_state(db: DbSession) -> SyncState:
+    state = db.get(SyncState, 1)
+
+    if state is None:
+        state = SyncState(
+            id=1,
+            sync_status='never',
+            running_balance_czk=0,
+        )
+        db.add(state)
+        db.flush()
+
+    return state
+
+
+def _active_reward_query(db: DbSession):
+    return db.query(Reward).join(
+        Grade,
+        Reward.grade_id == Grade.id,
+    ).filter(
+        Reward.status == 'pending',
+        Grade.active_in_sync.is_(True),
+    )
+
+
+def _refresh_running_balance(
+    db: DbSession,
+    state: SyncState,
+) -> int:
+    balance = (
+        _active_reward_query(db)
+        .with_entities(
+            func.coalesce(func.sum(Reward.amount_czk), 0)
+        )
+        .scalar()
+        or 0
+    )
+
+    state.running_balance_czk = int(balance)
+    return state.running_balance_czk
+
+
+def _sync_state_payload(state: SyncState) -> dict:
+    balance = int(state.running_balance_czk or 0)
+
+    return {
+        'last_sync_at': (
+            state.last_sync_at.isoformat()
+            if state.last_sync_at
+            else None
+        ),
+        'sync_from_date': (
+            state.sync_from_date.isoformat()
+            if state.sync_from_date
+            else None
+        ),
+        'sync_status': state.sync_status,
+        'running_balance_czk': balance,
+        'payout_eligible_czk': max(balance, 0),
+    }
+
+
+def _audit(
+    db: DbSession,
+    payout_id: int,
+    event: str,
+    details: dict,
+) -> None:
+    db.add(
+        PayoutAudit(
+            payout_id=payout_id,
+            event=event,
+            details=json.dumps(
+                details,
+                ensure_ascii=False,
+            ),
+        )
+    )
+
+
+@router.post('/auth/parent/logout')
+def logout(
+    response: Response,
+    session_token: str | None = Cookie(
+        default=None,
+        alias=COOKIE_NAME,
+    ),
+    db: DbSession = Depends(get_db),
+):
+    delete_session(response, session_token, db)
+    return {'authenticated': False}
+
+
+@router.get('/parent/dashboard')
+def parent_dashboard(
+    _: object = Depends(current_parent),
+    db: DbSession = Depends(get_db),
+):
+    total = (
+        _active_reward_query(db)
+        .with_entities(
+            func.coalesce(func.sum(Reward.amount_czk), 0)
+        )
+        .scalar()
+        or 0
+    )
+
+    return {
+        'pending_reward_czk': total,
+        'grades_count': db.query(
+            func.count(Grade.id)
+        ).scalar() or 0,
+        'pending_rewards_count': _active_reward_query(db).count(),
+    }
+
+
+@router.get('/parent/grades')
+def parent_grades(
+    _: object = Depends(current_parent),
+    db: DbSession = Depends(get_db),
+):
+    grades = db.query(Grade).order_by(
+        Grade.grade_date.desc()
+    ).all()
+
+    return [
+        {
+            'id': grade.id,
+            'subject': grade.subject,
+            'grade_value': grade.grade_value,
+            'grade_date': grade.grade_date.isoformat(),
+            'description': grade.description,
+        }
+        for grade in grades
+    ]
+
+
+@router.get('/parent/reward-rules')
+def get_rules(
+    _: object = Depends(current_parent),
+    db: DbSession = Depends(get_db),
+):
+    rules = db.query(RewardRule).order_by(
+        RewardRule.grade_value
+    ).all()
+
+    return [
+        {
+            'id': rule.id,
+            'grade_value': rule.grade_value,
+            'reward_czk': rule.reward_czk,
+            'active': rule.active,
+        }
+        for rule in rules
+    ]
+
+
+@router.post('/parent/reward-rules')
+def add_rule(
+    payload: RuleIn,
+    _: object = Depends(current_parent),
+    db: DbSession = Depends(get_db),
+):
+    if db.query(RewardRule).filter_by(
+        grade_value=payload.grade_value
+    ).first():
+        raise HTTPException(
+            409,
+            'Pravidlo již existuje',
+        )
+
+    rule = RewardRule(**payload.model_dump())
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+
+    return {
+        'id': rule.id,
+        'grade_value': rule.grade_value,
+        'reward_czk': rule.reward_czk,
+        'active': rule.active,
+    }
+
+
+@router.put('/parent/reward-rules/{rule_id}')
+def update_rule(
+    rule_id: int,
+    payload: RuleIn,
+    _: object = Depends(current_parent),
+    db: DbSession = Depends(get_db),
+):
+    rule = db.get(RewardRule, rule_id)
+
+    if not rule:
+        raise HTTPException(
+            404,
+            'Pravidlo nebylo nalezeno',
+        )
+
+    duplicate = db.query(RewardRule).filter(
+        RewardRule.grade_value == payload.grade_value,
+        RewardRule.id != rule_id,
+    ).first()
+
+    if duplicate:
+        raise HTTPException(
+            409,
+            'Pravidlo pro tuto známku již existuje',
+        )
+
+    rule.grade_value = payload.grade_value
+    rule.reward_czk = payload.reward_czk
+    rule.active = payload.active
+    db.commit()
+
+    return {
+        'id': rule.id,
+        'grade_value': rule.grade_value,
+        'reward_czk': rule.reward_czk,
+        'active': rule.active,
+    }
+
+
+@router.delete('/parent/reward-rules/{rule_id}')
+def delete_rule(
+    rule_id: int,
+    _: object = Depends(current_parent),
+    db: DbSession = Depends(get_db),
+):
+    rule = db.get(RewardRule, rule_id)
+
+    if not rule:
+        raise HTTPException(
+            404,
+            'Pravidlo nebylo nalezeno',
+        )
+
+    db.delete(rule)
+    db.commit()
+
+    return {
+        'deleted': True,
+        'id': rule_id,
+    }
+
+
+@router.get('/parent/settings')
+def get_settings(
+    _: object = Depends(current_parent),
+    db: DbSession = Depends(get_db),
+):
+    values = {
+        item.key: item.value
+        for item in db.query(AppSetting).all()
+    }
+
+    return {
+        'start_date': values.get(
+            'start_date',
+            '2026-01-01',
+        ),
+        'sync_interval': values.get(
+            'sync_interval',
+            'manual',
+        ),
+        'payout_threshold_czk': int(
+            values.get(
+                'payout_threshold_czk',
+                '100',
+            )
+        ),
+        'ln_address': values.get(
+            'ln_address',
+            '',
+        ),
+        'payout_mode': values.get(
+            'payout_mode',
+            'disabled',
+        ),
+    }
+
+
+@router.put('/parent/settings')
+def save_settings(
+    payload: SettingsIn,
+    _: object = Depends(current_parent),
+    db: DbSession = Depends(get_db),
+):
+    if payload.payout_mode not in {
+        'disabled',
+        'draft',
+        'manual',
+        'scheduler',
+    }:
+        raise HTTPException(
+            422,
+            'Neplatný režim výplaty',
+        )
+
+    for key, value in payload.model_dump().items():
+        _set_setting(db, key, str(value))
+
+    db.commit()
+    return payload.model_dump()
+
+
+@router.get('/parent/sync/status')
+def sync_status(
+    _: object = Depends(current_parent),
+    db: DbSession = Depends(get_db),
+):
+    state = _get_sync_state(db)
+    _refresh_running_balance(db, state)
+
+    positive = (
+        _active_reward_query(db)
+        .filter(Reward.amount_czk > 0)
+        .with_entities(
+            func.coalesce(func.sum(Reward.amount_czk), 0)
+        )
+        .scalar()
+        or 0
+    )
+
+    negative = (
+        _active_reward_query(db)
+        .filter(Reward.amount_czk < 0)
+        .with_entities(
+            func.coalesce(func.sum(Reward.amount_czk), 0)
+        )
+        .scalar()
+        or 0
+    )
+
+    db.commit()
+
+    payload = _sync_state_payload(state)
+    payload.update({
+        'positive_pending_czk': int(positive),
+        'negative_pending_czk': int(negative),
+    })
+
+    return payload
+
+
+@router.post('/parent/sync')
+def sync(
+    payload: SyncIn,
+    _: object = Depends(current_parent),
+    db: DbSession = Depends(get_db),
+):
+    if payload.mode not in {'normal', 'backtest'}:
+        raise HTTPException(
+            422,
+            'Neplatný režim synchronizace',
+        )
+
+    requested_from_date = payload.from_date or date(2026, 1, 1)
+    state = _get_sync_state(db)
+
+    run = SyncRun(
+        mode=payload.mode,
+        from_date=requested_from_date,
+        status='running',
+    )
+
+    state.sync_status = 'running'
+    state.sync_from_date = requested_from_date
+
+    db.add(run)
+    db.commit()
+
+    try:
+        fetched = BakalariService().fetch_grades()
+        run.grades_found = len(fetched)
+        fetched_ids = set()
+
+        for item in fetched:
+            external_id = str(item['external_id'])
+            fetched_ids.add(external_id)
+            in_range = item['grade_date'] >= requested_from_date
+
+            grade = db.query(Grade).filter_by(
+                external_id=external_id
+            ).first()
+
+            if grade is None:
+                grade = Grade(
+                    **item,
+                    active_in_sync=in_range,
+                )
+                db.add(grade)
+                db.flush()
+                run.grades_new += 1
+            else:
+                grade.subject = item['subject']
+                grade.grade_value = item['grade_value']
+                grade.grade_date = item['grade_date']
+                grade.description = item.get('description')
+                grade.source = item.get(
+                    'source',
+                    grade.source,
+                )
+                grade.active_in_sync = in_range
+
+            reward = db.query(Reward).filter_by(
+                grade_id=grade.id
+            ).first()
+
+            rule = db.query(RewardRule).filter_by(
+                grade_value=grade.grade_value,
+                active=True,
+            ).first()
+
+            if not in_range:
+                if reward is not None and reward.status == 'pending':
+                    reward.status = 'superseded'
+                continue
+
+            if reward is not None and reward.status == 'superseded':
+                reward.status = 'pending'
+
+            if rule is None:
+                if reward is not None and reward.status == 'pending':
+                    reward.amount_czk = 0
+                    reward.calculation_type = payload.mode
+            elif reward is None:
+                db.add(
+                    Reward(
+                        grade_id=grade.id,
+                        amount_czk=rule.reward_czk,
+                        calculation_type=payload.mode,
+                    )
+                )
+            elif reward.status == 'pending':
+                reward.amount_czk = rule.reward_czk
+                reward.calculation_type = payload.mode
+
+        for grade in db.query(Grade).filter(
+            Grade.source == 'bakalari'
+        ).all():
+            if grade.external_id not in fetched_ids:
+                grade.active_in_sync = False
+
+                reward = db.query(Reward).filter_by(
+                    grade_id=grade.id
+                ).first()
+
+                if reward is not None and reward.status == 'pending':
+                    reward.status = 'superseded'
+
+        run.status = 'success'
+        run.finished_at = datetime.utcnow()
+        state.sync_status = 'success'
+        state.last_sync_at = datetime.utcnow()
+
+        _refresh_running_balance(db, state)
+        db.commit()
+
+        return {
+            'status': 'success',
+            'mode': payload.mode,
+            'grades_found': run.grades_found,
+            'grades_new': run.grades_new,
+            'running_balance_czk': state.running_balance_czk,
+            'payout': None,
+        }
+
+    except NotImplementedError as exc:
+        run.status = 'failed'
+        run.error_message = str(exc)
+        run.finished_at = datetime.utcnow()
+        state.sync_status = 'failed'
+        db.commit()
+        raise HTTPException(501, str(exc))
+
+    except Exception as exc:
+        run.status = 'failed'
+        run.error_message = str(exc)
+        run.finished_at = datetime.utcnow()
+        state.sync_status = 'failed'
+        db.commit()
+        raise HTTPException(
+            502,
+            'Synchronizace selhala',
+        ) from exc
+
+
+@router.get('/parent/payout/preview')
+def payout_preview(
+    _: object = Depends(current_parent),
+    db: DbSession = Depends(get_db),
+):
+    state = _get_sync_state(db)
+    _refresh_running_balance(db, state)
+    db.commit()
+
+    balance = int(state.running_balance_czk or 0)
+    pending_count = _active_reward_query(db).count()
+    threshold = int(
+        _get_setting(
+            db,
+            'payout_threshold_czk',
+            '100',
+        ) or '100'
+    )
+    ln_address = _get_setting(
+        db,
+        'ln_address',
+    ).strip()
+
+    eligible = max(balance, 0)
+    estimated_sats = None
+    rate_available = False
+
+    if eligible > 0:
+        try:
+            czk_per_btc = RateService().get_czk_per_btc()
+            estimated_sats = RateService().czk_to_sats(
+                eligible,
+                czk_per_btc,
+            )
+            rate_available = True
+        except (RuntimeError, ValueError):
+            pass
+
+    return {
+        'pending_reward_czk': balance,
+        'payout_eligible_czk': eligible,
+        'pending_rewards_count': pending_count,
+        'payout_threshold_czk': threshold,
+        'threshold_reached': eligible >= threshold,
+        'ln_address_configured': bool(
+            ln_address and '@' in ln_address
+        ),
+        'estimated_sats': estimated_sats,
+        'rate_available': rate_available,
+        'payment_will_be_sent': False,
+    }
+
+
+@router.post('/parent/payout/draft')
+def create_payout_draft(
+    _: PayoutDraftIn,
+    __: object = Depends(current_parent),
+    db: DbSession = Depends(get_db),
+):
+    if _get_setting(
+        db,
+        'payout_mode',
+        'disabled',
+    ) != 'draft':
+        raise HTTPException(
+            409,
+            'Draft payout není povolený',
+        )
+
+    state = _get_sync_state(db)
+    _refresh_running_balance(db, state)
+
+    balance = int(state.running_balance_czk or 0)
+    eligible = max(balance, 0)
+    threshold = int(
+        _get_setting(
+            db,
+            'payout_threshold_czk',
+            '100',
+        ) or '100'
+    )
+    ln_address = _get_setting(
+        db,
+        'ln_address',
+    ).strip()
+
+    if eligible <= 0:
+        raise HTTPException(
+            409,
+            'Kladný zůstatek k výplatě není k dispozici',
+        )
+
+    if eligible < threshold:
+        raise HTTPException(
+            409,
+            'Zůstatek nedosahuje limitu výplaty',
+        )
+
+    if not ln_address or '@' not in ln_address:
+        raise HTTPException(
+            409,
+            'Lightning adresa není nastavena',
+        )
+
+    try:
+        czk_per_btc = RateService().get_czk_per_btc()
+        amount_sats = RateService().czk_to_sats(
+            eligible,
+            czk_per_btc,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            503,
+            'Kurz pro přepočet není dostupný',
+        ) from exc
+
+    active_draft = db.query(Payout).filter(
+        Payout.status == 'draft'
+    ).first()
+
+    if active_draft:
+        return {
+            'status': active_draft.status,
+            'payout_id': active_draft.id,
+            'amount_czk': active_draft.amount_czk,
+            'amount_sats': active_draft.amount_sats,
+            'ln_address': active_draft.ln_address,
+            'payment_will_be_sent': False,
+        }
+
+    payout = Payout(
+        ln_address=ln_address,
+        amount_czk=eligible,
+        amount_sats=amount_sats,
+        idempotency_key=uuid4().hex,
+        status='draft',
+    )
+
+    db.add(payout)
+    db.flush()
+
+    _audit(
+        db,
+        payout.id,
+        'draft_created',
+        {
+            'amount_czk': eligible,
+            'amount_sats': amount_sats,
+            'balance_czk': balance,
+            'ln_address_configured': True,
+        },
+    )
+
+    db.commit()
+    db.refresh(payout)
+
+    return {
+        'status': payout.status,
+        'payout_id': payout.id,
+        'amount_czk': payout.amount_czk,
+        'amount_sats': payout.amount_sats,
+        'ln_address': payout.ln_address,
+        'idempotency_key': payout.idempotency_key,
+        'payment_will_be_sent': False,
+    }
+
+
+@router.post('/parent/payout/{payout_id}/simulate-confirm')
+def simulate_confirm_payout(
+    payout_id: int,
+    _: object = Depends(current_parent),
+    db: DbSession = Depends(get_db),
+):
+    payout = db.get(Payout, payout_id)
+
+    if payout is None:
+        raise HTTPException(
+            404,
+            'Payout draft nebyl nalezen',
+        )
+
+    if payout.status == 'simulated':
+        return {
+            'status': 'simulated',
+            'payout_id': payout.id,
+            'payment_will_be_sent': False,
+        }
+
+    if payout.status != 'draft':
+        raise HTTPException(
+            409,
+            f'Payout má stav {payout.status} a nelze ho simulovat',
+        )
+
+    state = _get_sync_state(db)
+    _refresh_running_balance(db, state)
+    current_balance = int(state.running_balance_czk or 0)
+
+    if current_balance != payout.amount_czk:
+        payout.status = 'stale'
+        payout.error_message = (
+            'Stav účtu se od vytvoření draftu změnil.'
+        )
+
+        _audit(
+            db,
+            payout.id,
+            'draft_stale',
+            {
+                'draft_amount_czk': payout.amount_czk,
+                'current_balance_czk': current_balance,
+            },
+        )
+
+        db.commit()
+
+        raise HTTPException(
+            409,
+            'Stav účtu se změnil; vytvoř nový draft',
+        )
+
+    payout.status = 'simulated'
+    payout.completed_at = datetime.utcnow()
+
+    _audit(
+        db,
+        payout.id,
+        'simulated_confirmation',
+        {
+            'amount_czk': payout.amount_czk,
+            'amount_sats': payout.amount_sats,
+            'payment_will_be_sent': False,
+        },
+    )
+
+    db.commit()
+
+    return {
+        'status': 'simulated',
+        'payout_id': payout.id,
+        'amount_czk': payout.amount_czk,
+        'amount_sats': payout.amount_sats,
+        'payment_will_be_sent': False,
+    }
+
+
+@router.get('/parent/payouts')
+def list_payouts(
+    _: object = Depends(current_parent),
+    db: DbSession = Depends(get_db),
+):
+    payouts = db.query(Payout).order_by(
+        Payout.created_at.desc()
+    ).all()
+
+    return [
+        {
+            'id': payout.id,
+            'ln_address': payout.ln_address,
+            'amount_czk': payout.amount_czk,
+            'amount_sats': payout.amount_sats,
+            'status': payout.status,
+            'idempotency_key': payout.idempotency_key,
+            'error_message': payout.error_message,
+            'created_at': payout.created_at.isoformat(),
+            'completed_at': (
+                payout.completed_at.isoformat()
+                if payout.completed_at
+                else None
+            ),
+        }
+        for payout in payouts
+    ]
+
+
+@router.post('/parent/payout')
+def manual_payout(
+    _: object = Depends(current_parent),
+    db: DbSession = Depends(get_db),
+):
+    if _get_setting(
+        db,
+        'payout_mode',
+        'disabled',
+    ) != 'manual':
+        raise HTTPException(
+            409,
+            'Ruční payout není povolený',
+        )
+
+    state = _get_sync_state(db)
+    _refresh_running_balance(db, state)
+
+    balance = int(state.running_balance_czk or 0)
+    eligible = max(balance, 0)
+    threshold = int(
+        _get_setting(
+            db,
+            'payout_threshold_czk',
+            '100',
+        ) or '100'
+    )
+    ln_address = _get_setting(
+        db,
+        'ln_address',
+    ).strip()
+
+    if eligible <= 0:
+        raise HTTPException(
+            409,
+            'Kladný zůstatek k výplatě není k dispozici',
+        )
+
+    if eligible < threshold:
+        raise HTTPException(
+            409,
+            'Zůstatek nedosahuje limitu výplaty',
+        )
+
+    if not ln_address or '@' not in ln_address:
+        raise HTTPException(
+            409,
+            'Lightning adresa není nastavena',
+        )
+
+    existing = db.query(Payout).filter(
+        Payout.status.in_(['pending', 'paid']),
+        Payout.amount_czk == eligible,
+        Payout.ln_address == ln_address,
+    ).first()
+
+    if existing:
+        return {
+            'status': existing.status,
+            'payout_id': existing.id,
+            'amount_czk': existing.amount_czk,
+            'amount_sats': existing.amount_sats,
+            'payment_hash': existing.payment_hash,
+        }
+
+    try:
+        czk_per_btc = RateService().get_czk_per_btc()
+        amount_sats = RateService().czk_to_sats(
+            eligible,
+            czk_per_btc,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            503,
+            'Kurz pro přepočet není dostupný',
+        ) from exc
+
+    payout = Payout(
+        ln_address=ln_address,
+        amount_czk=eligible,
+        amount_sats=amount_sats,
+        idempotency_key=uuid4().hex,
+        status='pending',
+    )
+
+    db.add(payout)
+    db.flush()
+
+    _audit(
+        db,
+        payout.id,
+        'payment_started',
+        {
+            'amount_czk': eligible,
+            'amount_sats': amount_sats,
+            'ln_address': ln_address,
+        },
+    )
+
+    try:
+        service = LnbitsService()
+        invoice = service.resolve_ln_address(
+            ln_address,
+            amount_sats,
+        )
+        result = service.pay_invoice(invoice)
+
+        payout.invoice = invoice
+        payout.payment_hash = result.get('payment_hash')
+        payout.status = 'paid'
+        payout.completed_at = datetime.utcnow()
+
+        db.query(Reward).filter(
+            Reward.status == 'pending'
+        ).update({
+            'status': 'paid',
+        })
+
+        _audit(
+            db,
+            payout.id,
+            'payment_succeeded',
+            {
+                'amount_czk': eligible,
+                'amount_sats': amount_sats,
+                'payment_hash': payout.payment_hash,
+            },
+        )
+
+        db.commit()
+
+        return {
+            'status': 'paid',
+            'payout_id': payout.id,
+            'amount_czk': eligible,
+            'amount_sats': amount_sats,
+            'payment_hash': payout.payment_hash,
+        }
+
+    except (
+        LnAddressResolutionError,
+        LnbitsPaymentError,
+        RuntimeError,
+    ) as exc:
+        payout.status = 'failed'
+        payout.error_message = str(exc)
+        payout.completed_at = datetime.utcnow()
+
+        _audit(
+            db,
+            payout.id,
+            'payment_failed',
+            {
+                'error': str(exc),
+            },
+        )
+
+        db.commit()
+
+        raise HTTPException(
+            502,
+            'Platbu se nepodařilo odeslat',
+        ) from exc
+
+
+def _current_school_year() -> tuple[date, date, str]:
+    today = date.today()
+
+    if today.month >= 9:
+        start_year = today.year
+    else:
+        start_year = today.year - 1
+
+    from_date = date(start_year, 9, 1)
+    to_date = date(start_year + 1, 9, 1)
+    school_year = f'{start_year}/{start_year + 1}'
+
+    return from_date, to_date, school_year
+
+
+@router.get('/child/overview')
+def child_overview(
+    db: DbSession = Depends(get_db),
+):
+    from_date, to_date, school_year = _current_school_year()
+
+    grades = db.query(Grade).filter(
+        Grade.grade_date >= from_date,
+        Grade.grade_date < to_date,
+    ).order_by(
+        Grade.grade_date.desc(),
+        Grade.id.desc(),
+    ).all()
+
+    subject_values: dict[str, list[int]] = {}
+    grade_items = []
+
+    for grade in grades:
+        grade_items.append({
+            'id': grade.id,
+            'subject': grade.subject,
+            'grade_value': grade.grade_value,
+            'grade_date': grade.grade_date.isoformat(),
+            'description': grade.description,
+        })
+
+        if grade.grade_value in {'1', '2', '3', '4', '5'}:
+            subject_values.setdefault(
+                grade.subject,
+                [],
+            ).append(
+                int(grade.grade_value)
+            )
+
+    subjects = [
+        {
+            'subject': subject,
+            'grades_count': len(values),
+            'average': round(
+                sum(values) / len(values),
+                2,
+            ),
+            'average_grades_count': len(values),
+        }
+        for subject, values in sorted(
+            subject_values.items()
+        )
+    ]
+
+    paid_czk = db.query(
+        func.coalesce(func.sum(Payout.amount_czk), 0)
+    ).filter(
+        Payout.status == 'paid'
+    ).scalar() or 0
+
+    paid_payout_count = db.query(Payout).filter(
+        Payout.status == 'paid'
+    ).count()
+
+    return {
+        'school_year': school_year,
+        'from_date': from_date.isoformat(),
+        'to_date': to_date.isoformat(),
+        'grades': grade_items,
+        'subjects': subjects,
+        'reward_summary': {
+            'paid_czk': int(paid_czk),
+            'paid_payout_count': paid_payout_count,
+        },
+    }
+
+
+@router.get('/child/summary')
+def child_summary(
+    db: DbSession = Depends(get_db),
+):
+    total = db.query(
+        func.coalesce(func.sum(Reward.amount_czk), 0)
+    ).scalar() or 0
+
+    subjects = db.query(
+        Grade.subject,
+        func.count(Grade.id).label('count'),
+    ).group_by(
+        Grade.subject
+    ).all()
+
+    return {
+        'reward_czk': total,
+        'subjects': [
+            {
+                'subject': subject,
+                'grades_count': count,
+            }
+            for subject, count in subjects
+        ],
+    }
