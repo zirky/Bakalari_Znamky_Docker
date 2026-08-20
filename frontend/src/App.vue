@@ -8,6 +8,8 @@ const authenticated = ref(false)
 const message = ref('')
 const active = ref('child')
 const childOverview = ref({})
+const selectedSchoolYear = ref('')
+const childOverviewLoading = ref(false)
 const dashboard = ref({})
 const grades = ref([])
 const rules = ref([])
@@ -114,13 +116,34 @@ async function getJson(path, options) {
   return response.json()
 }
 
-async function loadChildOverview() {
+async function loadChildOverview(
+  schoolYear = selectedSchoolYear.value
+) {
+  childOverviewLoading.value = true
+
   try {
-    childOverview.value = await getJson('/api/child/overview')
+    const query = schoolYear
+      ? `?school_year=${encodeURIComponent(schoolYear)}`
+      : ''
+
+    childOverview.value = await getJson(
+      `/api/child/overview${query}`
+    )
+
+    selectedSchoolYear.value =
+      childOverview.value.selected_school_year ||
+      childOverview.value.school_year ||
+      ''
   } catch {
     childOverview.value = {}
     backendAvailable.value = false
+  } finally {
+    childOverviewLoading.value = false
   }
+}
+
+async function changeChildSchoolYear() {
+  await loadChildOverview(selectedSchoolYear.value)
 }
 
 async function loadParentSection() {
@@ -620,9 +643,10 @@ onBeforeUnmount(() => {
           <button
             class="secondary-button"
             type="button"
+            :disabled="childOverviewLoading"
             @click="selectChildSection"
           >
-            Obnovit
+            {{ childOverviewLoading ? 'Načítám…' : 'Obnovit' }}
           </button>
         </div>
       </header>
@@ -645,19 +669,37 @@ onBeforeUnmount(() => {
         <div class="panel-header">
           <div>
             <h2>Známky</h2>
-            <p v-if="childOverview.school_year">
-              Školní rok {{ childOverview.school_year }}
+            <p v-if="childOverview.selected_school_year">
+              Školní rok {{ childOverview.selected_school_year }}
             </p>
           </div>
+
+          <label
+            v-if="childOverview.available_school_years?.length"
+            class="school-year-select"
+          >
+            Školní rok
+            <select
+              v-model="selectedSchoolYear"
+              :disabled="childOverviewLoading"
+              @change="changeChildSchoolYear"
+            >
+              <option
+                v-for="year in childOverview.available_school_years"
+                :key="year"
+                :value="year"
+              >
+                {{ year }}
+              </option>
+            </select>
+          </label>
         </div>
 
         <div class="cards">
           <div>
-            Období
+            Vybraný školní rok
             <strong>
-              {{ childOverview.from_date || '—' }}
-              –
-              {{ childOverview.to_date || '—' }}
+              {{ childOverview.selected_school_year || '—' }}
             </strong>
           </div>
 
@@ -686,7 +728,7 @@ onBeforeUnmount(() => {
         <h3>Průměry podle předmětu</h3>
 
         <p v-if="!childOverview.subjects?.length">
-          Pro aktuální období nejsou k dispozici číselné známky.
+          Pro vybraný školní rok nejsou k dispozici číselné známky.
         </p>
 
         <table v-else>
@@ -713,7 +755,7 @@ onBeforeUnmount(() => {
         <h3>Seznam známek</h3>
 
         <p v-if="!childOverview.grades?.length">
-          Pro aktuální období nejsou načtené žádné známky.
+          Pro vybraný školní rok nejsou načtené žádné známky.
         </p>
 
         <div
@@ -1516,6 +1558,25 @@ p {
   box-shadow: 0 20px 45px rgba(2, 6, 23, 0.25);
 }
 
+.panel-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.panel-header h2 {
+  margin-bottom: 8px;
+}
+
+.panel-header p {
+  margin-bottom: 0;
+}
+
+.school-year-select {
+  min-width: 180px;
+}
+
 .nav {
   display: flex;
   flex-wrap: wrap;
@@ -1733,12 +1794,17 @@ small {
     padding: 16px;
   }
 
-  .page-header {
+  .page-header,
+  .panel-header {
     display: grid;
   }
 
   .panel {
     padding: 16px;
+  }
+
+  .school-year-select {
+    min-width: 0;
   }
 
   .child-header-actions {
