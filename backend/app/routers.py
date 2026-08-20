@@ -465,7 +465,9 @@ def sync(
             if grade is None:
                 grade = Grade(
                     **item,
-                    school_year=school_year_for_date(item['grade_date']),
+                    school_year=school_year_for_date(
+                        item['grade_date']
+                    ),
                     active_in_sync=in_range,
                 )
                 db.add(grade)
@@ -475,7 +477,9 @@ def sync(
                 grade.subject = item['subject']
                 grade.grade_value = item['grade_value']
                 grade.grade_date = item['grade_date']
-                grade.school_year = school_year_for_date(grade.grade_date)
+                grade.school_year = school_year_for_date(
+                    grade.grade_date
+                )
                 grade.description = item.get('description')
                 grade.source = item.get(
                     'source',
@@ -1006,30 +1010,69 @@ def manual_payout(
         ) from exc
 
 
-def _current_school_year() -> tuple[date, date, str]:
-    today = date.today()
+def _current_school_year() -> str:
+    return school_year_for_date(date.today())
 
-    if today.month >= 9:
-        start_year = today.year
-    else:
-        start_year = today.year - 1
 
-    from_date = date(start_year, 9, 1)
-    to_date = date(start_year + 1, 9, 1)
-    school_year = f'{start_year}/{start_year + 1}'
+def _available_school_years(db: DbSession) -> list[str]:
+    years = [
+        school_year
+        for (school_year,) in db.query(Grade.school_year)
+        .filter(Grade.school_year.is_not(None))
+        .distinct()
+        .order_by(Grade.school_year.desc())
+        .all()
+    ]
+    active_school_year = _current_school_year()
 
-    return from_date, to_date, school_year
+    if active_school_year not in years:
+        years.insert(0, active_school_year)
+
+    return years
+
+
+def _validate_school_year(value: str) -> str:
+    if len(value) != 9 or value[4] != '/':
+        raise HTTPException(422, 'Neplatný školní rok')
+
+    try:
+        start_year = int(value[:4])
+        end_year = int(value[5:])
+    except ValueError as exc:
+        raise HTTPException(422, 'Neplatný školní rok') from exc
+
+    if end_year != start_year + 1:
+        raise HTTPException(422, 'Neplatný školní rok')
+
+    return value
+
+
+@router.get('/school-years')
+def school_years(
+    db: DbSession = Depends(get_db),
+):
+    active_school_year = _current_school_year()
+
+    return {
+        'active_school_year': active_school_year,
+        'available_school_years': _available_school_years(db),
+    }
 
 
 @router.get('/child/overview')
 def child_overview(
+    school_year: str | None = None,
     db: DbSession = Depends(get_db),
 ):
-    from_date, to_date, school_year = _current_school_year()
+    active_school_year = _current_school_year()
+    selected_school_year = (
+        _validate_school_year(school_year)
+        if school_year
+        else active_school_year
+    )
 
     grades = db.query(Grade).filter(
-        Grade.grade_date >= from_date,
-        Grade.grade_date < to_date,
+        Grade.school_year == selected_school_year,
     ).order_by(
         Grade.grade_date.desc(),
         Grade.id.desc(),
@@ -1051,9 +1094,7 @@ def child_overview(
             subject_values.setdefault(
                 grade.subject,
                 [],
-            ).append(
-                int(grade.grade_value)
-            )
+            ).append(int(grade.grade_value))
 
     subjects = [
         {
@@ -1065,9 +1106,7 @@ def child_overview(
             ),
             'average_grades_count': len(values),
         }
-        for subject, values in sorted(
-            subject_values.items()
-        )
+        for subject, values in sorted(subject_values.items())
     ]
 
     paid_czk = db.query(
@@ -1081,9 +1120,10 @@ def child_overview(
     ).count()
 
     return {
-        'school_year': school_year,
-        'from_date': from_date.isoformat(),
-        'to_date': to_date.isoformat(),
+        'school_year': selected_school_year,
+        'selected_school_year': selected_school_year,
+        'active_school_year': active_school_year,
+        'available_school_years': _available_school_years(db),
         'grades': grade_items,
         'subjects': subjects,
         'reward_summary': {
