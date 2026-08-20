@@ -26,6 +26,7 @@ from .services.lnbits import (
     LnbitsService,
 )
 from .services.rates import RateService
+from .services.sync_schedule import next_sync_at
 
 
 router = APIRouter(prefix='/api')
@@ -76,6 +77,22 @@ def _set_setting(
         db.add(AppSetting(key=key, value=value))
 
 
+def _configured_start_date(db: DbSession) -> date:
+    value = _get_setting(
+        db,
+        'start_date',
+        '2026-01-01',
+    )
+
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(
+            422,
+            'Neplatné počáteční datum synchronizace',
+        ) from exc
+
+
 def _get_sync_state(db: DbSession) -> SyncState:
     state = db.get(SyncState, 1)
 
@@ -118,14 +135,22 @@ def _refresh_running_balance(
     return state.running_balance_czk
 
 
+def _datetime_payload(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
 def _sync_state_payload(state: SyncState) -> dict:
     balance = int(state.running_balance_czk or 0)
 
     return {
-        'last_sync_at': (
-            state.last_sync_at.isoformat()
-            if state.last_sync_at
-            else None
+        'last_sync_at': _datetime_payload(
+            state.last_sync_at
+        ),
+        'next_sync_at': _datetime_payload(
+            state.next_sync_at
+        ),
+        'sync_started_at': _datetime_payload(
+            state.sync_started_at
         ),
         'sync_from_date': (
             state.sync_from_date.isoformat()
@@ -133,6 +158,10 @@ def _sync_state_payload(state: SyncState) -> dict:
             else None
         ),
         'sync_status': state.sync_status,
+        'last_sync_error': state.last_sync_error,
+        'consecutive_failures': int(
+            state.consecutive_failures or 0
+        ),
         'running_balance_czk': balance,
         'payout_eligible_czk': max(balance, 0),
     }
@@ -375,11 +404,65 @@ def save_settings(
             'Neplatný režim výplaty',
         )
 
+    if payload.sync_interval not in {
+        'manual',
+        'weekly',
+        'monthly',
+    }:
+        raise HTTPException(
+            422,
+            'Neplatný interval synchronizace',
+        )
+
+    try:
+        date.fromisoformat(payload.start_date)
+    except ValueError as exc:
+        raise HTTPException(
+            422,
+            'Neplatné počáteční datum synchronizace',
+        ) from exc
+
+    previous_interval = _get_setting(
+        db,
+        'sync_interval',
+        'manual',
+    )
+
     for key, value in payload.model_dump().items():
         _set_setting(db, key, str(value))
 
+    state = _get_sync_state(db)
+
+    if payload.sync_interval == 'manual':
+        state.next_sync_at = None
+
+        if state.sync_status != 'running':
+            state.sync_status = 'manual'
+            state.sync_started_at = None
+
+    elif previous_interval != payload.sync_interval:
+        state.next_sync_at = datetime.utcnow()
+        state.sync_status = 'scheduled'
+        state.sync_started_at = None
+        state.last_sync_error = None
+        state.consecutive_failures = 0
+
+    elif state.next_sync_at is None:
+        state.next_sync_at = datetime.utcnow()
+        state.sync_status = 'scheduled'
+        state.sync_started_at = None
+
     db.commit()
-    return payload.model_dump()
+
+    result = payload.model_dump()
+    result.update({
+        'next_sync_at': _datetime_payload(
+            state.next_sync_at
+        ),
+        'sync_status': state.sync_status,
+    })
+
+    return result
 
 
 @router.get('/parent/sync/status')
@@ -433,8 +516,18 @@ def sync(
             'Neplatný režim synchronizace',
         )
 
-    requested_from_date = payload.from_date or date(2026, 1, 1)
     state = _get_sync_state(db)
+
+    if state.sync_status == 'running':
+        raise HTTPException(
+            409,
+            'Synchronizace již probíhá',
+        )
+
+    requested_from_date = (
+        payload.from_date
+        or _configured_start_date(db)
+    )
 
     run = SyncRun(
         mode=payload.mode,
@@ -443,7 +536,9 @@ def sync(
     )
 
     state.sync_status = 'running'
+    state.sync_started_at = datetime.utcnow()
     state.sync_from_date = requested_from_date
+    state.last_sync_error = None
 
     db.add(run)
     db.commit()
@@ -497,15 +592,24 @@ def sync(
             ).first()
 
             if not in_range:
-                if reward is not None and reward.status == 'pending':
+                if (
+                    reward is not None
+                    and reward.status == 'pending'
+                ):
                     reward.status = 'superseded'
                 continue
 
-            if reward is not None and reward.status == 'superseded':
+            if (
+                reward is not None
+                and reward.status == 'superseded'
+            ):
                 reward.status = 'pending'
 
             if rule is None:
-                if reward is not None and reward.status == 'pending':
+                if (
+                    reward is not None
+                    and reward.status == 'pending'
+                ):
                     reward.amount_czk = 0
                     reward.calculation_type = payload.mode
             elif reward is None:
@@ -530,13 +634,33 @@ def sync(
                     grade_id=grade.id
                 ).first()
 
-                if reward is not None and reward.status == 'pending':
+                if (
+                    reward is not None
+                    and reward.status == 'pending'
+                ):
                     reward.status = 'superseded'
 
+        completed_at = datetime.utcnow()
+        sync_interval = _get_setting(
+            db,
+            'sync_interval',
+            'manual',
+        )
+
         run.status = 'success'
-        run.finished_at = datetime.utcnow()
+        run.finished_at = completed_at
+
         state.sync_status = 'success'
-        state.last_sync_at = datetime.utcnow()
+        state.last_sync_at = completed_at
+        state.next_sync_at = next_sync_at(
+            sync_interval,
+            now=completed_at.replace(
+                tzinfo=datetime.now().astimezone().tzinfo
+            ),
+        )
+        state.sync_started_at = None
+        state.last_sync_error = None
+        state.consecutive_failures = 0
 
         _refresh_running_balance(db, state)
         db.commit()
@@ -547,6 +671,9 @@ def sync(
             'grades_found': run.grades_found,
             'grades_new': run.grades_new,
             'running_balance_czk': state.running_balance_czk,
+            'next_sync_at': _datetime_payload(
+                state.next_sync_at
+            ),
             'payout': None,
         }
 
@@ -554,16 +681,32 @@ def sync(
         run.status = 'failed'
         run.error_message = str(exc)
         run.finished_at = datetime.utcnow()
+
         state.sync_status = 'failed'
+        state.sync_started_at = None
+        state.last_sync_error = str(exc)
+        state.consecutive_failures = int(
+            state.consecutive_failures or 0
+        ) + 1
+
         db.commit()
+
         raise HTTPException(501, str(exc))
 
     except Exception as exc:
         run.status = 'failed'
         run.error_message = str(exc)
         run.finished_at = datetime.utcnow()
+
         state.sync_status = 'failed'
+        state.sync_started_at = None
+        state.last_sync_error = str(exc)
+        state.consecutive_failures = int(
+            state.consecutive_failures or 0
+        ) + 1
+
         db.commit()
+
         raise HTTPException(
             502,
             'Synchronizace selhala',
