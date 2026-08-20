@@ -18,6 +18,7 @@ from .models import (
     SyncRun,
     SyncState,
 )
+from .school_year import school_year_for_date
 from .services.bakalari import BakalariService
 from .services.lnbits import (
     LnAddressResolutionError,
@@ -464,6 +465,7 @@ def sync(
             if grade is None:
                 grade = Grade(
                     **item,
+                    school_year=school_year_for_date(item['grade_date']),
                     active_in_sync=in_range,
                 )
                 db.add(grade)
@@ -473,6 +475,7 @@ def sync(
                 grade.subject = item['subject']
                 grade.grade_value = item['grade_value']
                 grade.grade_date = item['grade_date']
+                grade.school_year = school_year_for_date(grade.grade_date)
                 grade.description = item.get('description')
                 grade.source = item.get(
                     'source',
