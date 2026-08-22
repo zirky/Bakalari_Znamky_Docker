@@ -15,8 +15,10 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import relationship
-from sqlalchemy.orm.decl_api import Base
+from sqlalchemy.orm import declarative_base, relationship
+
+
+Base = declarative_base()
 
 
 class AppSetting(Base):
