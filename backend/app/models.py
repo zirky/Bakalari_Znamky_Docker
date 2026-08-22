@@ -10,7 +10,7 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.orm import relationship, Mapped, mapped_column, Session
+from sqlalchemy.orm import relationship, Mapped, mapped_column
 from datetime import datetime, date
 from typing import List
 
@@ -209,16 +209,32 @@ class TimetableEntry(Base):
     )
 
     # Identifikace hodiny
-    day_of_week: Mapped[int] = mapped_column(Integer, nullable=False)  # 1=pondělí®® .. 7=neděle
-    lesson_number: Mapped[int] = mapped_column(Integer, nullable=False)  # pořadí®® hodiny v dni
-    subject: Mapped[str] = mapped_column(String, nullable=False)  # název předmětu
-    room: Mapped[str] = mapped_column(String, nullable=True)  # učebna
-    teacher: Mapped[str] = mapped_column(String, nullable=True)  # učitel
-    note: Mapped[str] = mapped_column(String, nullable=True)  # pozná®®mka
+    day_of_week: Mapped[int] = mapped_column(Integer, nullable=False)
+    lesson_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    subject: Mapped[str] = mapped_column(String, nullable=False)
+    room: Mapped[str] = mapped_column(String, nullable=True)
+    teacher: Mapped[str] = mapped_column(String, nullable=True)
+    note: Mapped[str] = mapped_column(String, nullable=True)
 
     # Časová®® platnost
-    valid_from: Mapped[date] = mapped_column(Date, nullable=True)  # od kdy platí®®
-    valid_to: Mapped[date] = mapped_column(Date, nullable=True)  # do kdy platí®®
+    valid_from: Mapped[date] = mapped_column(Date, nullable=True)
+    valid_to: Mapped[date] = mapped_column(Date, nullable=True)
 
     # Relationship
     child: Mapped["Child"] = relationship("Child", back_populates="timetable_entries")
+
+
+class AuthUser(Base):
+    __tablename__ = "auth_users"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    pin_hash: Mapped[str] = mapped_column(String, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_login_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    sessions: Mapped[List["Session"]] = relationship("Session", back_populates="user")
+
+
+class Ses
