@@ -25,7 +25,7 @@ class AuthUser(Base):
     __tablename__ = 'auth_users'
 
     id = Column(Integer, primary_key=True)
-    username = Column(String, unique=True, nullable=False)
+    pin_hash = Column(String, nullable=False)
     role = Column(String, nullable=False, default='parent')
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
