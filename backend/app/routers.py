@@ -17,6 +17,8 @@ from .models import (
     RewardRule,
     SyncRun,
     SyncState,
+    TimetableEntry,
+    Child,
 )
 from .school_year import school_year_for_date
 from .services.bakalari import BakalariService
@@ -1301,3 +1303,84 @@ def child_summary(
             for subject, count in subjects
         ],
     }
+
+
+@router.get('/child/timetable')
+async def get_child_timetable(
+    child_id: int,
+    db: DbSession = Depends(get_db),
+    current_user: object = Depends(current_parent),
+):
+    """
+    Získá rozvrh hodin pro dané dítě.
+    """
+    child = db.query(Child).filter(
+        Child.id == child_id,
+        Child.parent_user_id == current_user.id
+    ).first()
+    if not child:
+        raise HTTPException(status_code=404, detail="Child not found")
+
+    entries = db.query(TimetableEntry).filter(
+        TimetableEntry.child_id == child_id
+    ).order_by(
+        TimetableEntry.day_of_week,
+        TimetableEntry.lesson_number
+    ).all()
+
+    return [
+        {
+            'id': e.id,
+            'day_of_week': e.day_of_week,
+            'lesson_number': e.lesson_number,
+            'subject': e.subject,
+            'room': e.room,
+            'teacher': e.teacher,
+            'note': e.note,
+            'valid_from': e.valid_from.isoformat() if e.valid_from else None,
+            'valid_to': e.valid_to.isoformat() if e.valid_to else None,
+        }
+        for e in entries
+    ]
+
+
+@router.post('/child/timetable/sync')
+async def sync_child_timetable(
+    payload: dict,
+    db: DbSession = Depends(get_db),
+    current_user: object = Depends(current_parent),
+):
+    """
+    Synchronizuje rozvrh hodin pro dané dítě.
+    payload: {"child_id": int, "entries": [...]}
+    """
+    child_id = payload["child_id"]
+    new_entries = payload["entries"]
+
+    child = db.query(Child).filter(
+        Child.id == child_id,
+        Child.parent_user_id == current_user.id
+    ).first()
+    if not child:
+        raise HTTPException(status_code=404, detail="Child not found")
+
+    db.query(TimetableEntry).filter(
+        TimetableEntry.child_id == child_id
+    ).delete()
+
+    for e in new_entries:
+        entry = TimetableEntry(
+            child_id=child_id,
+            day_of_week=e["day_of_week"],
+            lesson_number=e["lesson_number"],
+            subject=e["subject"],
+            room=e.get("room"),
+            teacher=e.get("teacher"),
+            note=e.get("note"),
+            valid_from=date.fromisoformat(e["valid_from"]) if e.get("valid_from") else None,
+            valid_to=date.fromisoformat(e["valid_to"]) if e.get("valid_to") else None,
+        )
+        db.add(entry)
+
+    db.commit()
+    return {"status": "ok", "count": len(new_entries)}
