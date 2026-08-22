@@ -1320,7 +1320,15 @@ async def get_child_timetable(
     if not child:
         raise HTTPException(status_code=404, detail="Child not found")
 
-    entries = db.query(TimetableEntry).filter.order_by(
+    @router.get('/child/timetable')
+async def get_child_timetable(
+    db: DbSession = Depends(get_db),
+    current_user: object = Depends(current_parent),
+):
+    """
+    Získá rozvrh hodin.
+    """
+    entries = db.query(TimetableEntry).order_by(
         TimetableEntry.day_of_week,
         TimetableEntry.lesson_number
     ).all()
@@ -1348,26 +1356,16 @@ async def sync_child_timetable(
     current_user: object = Depends(current_parent),
 ):
     """
-    Synchronizuje rozvrh hodin pro dané dítě.
-    payload: {"child_id": int, "entries": [...]}
+    Synchronizuje rozvrh hodin.
+    payload: {"entries": [...]}
     """
-    child_id = payload["child_id"]
     new_entries = payload["entries"]
 
-    child = db.query(Child).filter(
-        Child.id == child_id,
-        Child.parent_user_id == current_user.id
-    ).first()
-    if not child:
-        raise HTTPException(status_code=404, detail="Child not found")
-
-    db.query(TimetableEntry).filter(
-        TimetableEntry.child_id == child_id
-    ).delete()
+    # Smaž všechny existující záznamy
+    db.query(TimetableEntry).delete()
 
     for e in new_entries:
         entry = TimetableEntry(
-            child_id=child_id,
             day_of_week=e["day_of_week"],
             lesson_number=e["lesson_number"],
             subject=e["subject"],
