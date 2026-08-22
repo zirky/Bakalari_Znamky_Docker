@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import asyncio
+import logging
 
 from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +18,8 @@ from .database import SessionLocal, init_db
 from .routers import router
 from .services.sync_scheduler import run_sync_scheduler
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class PinLogin(BaseModel):
     pin: str
