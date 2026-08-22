@@ -21,6 +21,27 @@ from sqlalchemy.orm import declarative_base, relationship
 Base = declarative_base()
 
 
+class AuthUser(Base):
+    __tablename__ = 'auth_users'
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String, unique=True, nullable=False)
+    role = Column(String, nullable=False, default='parent')
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class Session(Base):
+    __tablename__ = 'sessions'
+
+    id = Column(Integer, primary_key=True)
+    token = Column(String, unique=True, nullable=False)
+    user_id = Column(Integer, ForeignKey('auth_users.id', ondelete='CASCADE'), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship('AuthUser', backref='sessions')
+
+
 class AppSetting(Base):
     __tablename__ = 'app_settings'
 
