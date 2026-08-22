@@ -129,7 +129,7 @@ async def run_sync_scheduler() -> None:
     settings = get_settings()
     poll_seconds = max(
         int(settings.sync_worker_poll_seconds),
-        10,
+        600,  # Změněno z 10 na 600 sekund (10 minut)
     )
 
     logger.info(
