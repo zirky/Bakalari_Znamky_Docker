@@ -121,6 +121,139 @@ class BakalariService:
                     result.append(normalized)
         return result
 
+    def get_timetable(self) -> list[dict[str, Any]]:
+        """
+        Získá rozvrh hodin z Bakalářů API.
+        
+        Vrátí seznam ve tvaru:
+        [
+            {
+                "day_of_week": 1,  # 1=pondělí .. 7=neděle
+                "lesson_number": 1,  # pořadí hodiny
+                "subject": "Matematika",
+                "room": "A12",
+                "teacher": "Novák",
+                "note": "",
+                "valid_from": "2026-09-01",  # nebo None
+                "valid_to": "2027-06-30"  # nebo None
+            },
+            ...
+        ]
+        """
+        try:
+            with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
+                prefix, token = self._authenticate(client)
+                response = client.get(
+                    self._api_url(prefix, '3/timetable'),
+                    headers={'Authorization': f'Bearer {token}'},
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except BakalariError:
+            raise
+        except httpx.HTTPStatusError as exc:
+            raise BakalariError(f'Načtení rozvrhu selhalo HTTP {exc.response.status_code}') from exc
+        except (httpx.HTTPError, ValueError) as exc:
+            raise BakalariError(f'Načtení rozvrhu z Bakalářů selhalo: {exc}') from exc
+
+        result: list[dict[str, Any]] = []
+        
+        # Bakaláři API vrací rozvrh jako seznam dní (Monday..Sunday)
+        days = payload if isinstance(payload, list) else []
+        
+        for day_index, day_data in enumerate(days, start=1):
+            if not isinstance(day_data, dict):
+                continue
+            
+            # Získání hodin pro daný den
+            lessons = day_data.get('Lessons', [])
+            if not isinstance(lessons, list):
+                continue
+            
+            for lesson in lessons:
+                if not isinstance(lesson, dict):
+                    continue
+                
+                normalized = self._normalize_lesson(lesson, day_index)
+                if normalized:
+                    result.append(normalized)
+        
+        return result
+
+    def _normalize_lesson(
+        self, lesson: dict[str, Any], day_of_week: int
+    ) -> dict[str, Any] | None:
+        """
+        Normalizuje jednu hodinu z Bakalářů API.
+        """
+        if not isinstance(lesson, dict):
+            return None
+        
+        # Získání předmětu
+        subject_data = lesson.get('Subject', {})
+        if isinstance(subject_data, dict):
+            subject = (
+                subject_data.get('Name')
+                or subject_data.get('Caption')
+                or subject_data.get('Abbrev')
+                or 'Neznámý předmět'
+            )
+        else:
+            subject = str(subject_data or 'Neznámý předmět')
+        
+        # Získání učebny
+        room_data = lesson.get('Room', {})
+        if isinstance(room_data, dict):
+            room = room_data.get('Name') or room_data.get('Caption') or None
+        else:
+            room = str(room_data) if room_data else None
+        
+        # Získání učitele
+        teacher_data = lesson.get('Teacher', {})
+        if isinstance(teacher_data, dict):
+            teacher = (
+                teacher_data.get('Name')
+                or teacher_data.get('Caption')
+                or None
+            )
+        else:
+            teacher = str(teacher_data) if teacher_data else None
+        
+        # Získání poznámky
+        note = lesson.get('Note') or lesson.get('Comment') or lesson.get('Description')
+        
+        # Získání čísla hodiny
+        lesson_number = lesson.get('LessonNumber') or lesson.get('Order') or 0
+        
+        # Získání data platnosti
+        valid_from = None
+        valid_to = None
+        
+        start_date = lesson.get('StartDate') or lesson.get('ValidFrom')
+        if start_date:
+            try:
+                valid_from = self._parse_date(str(start_date)).isoformat()
+            except ValueError:
+                pass
+        
+        end_date = lesson.get('EndDate') or lesson.get('ValidTo')
+        if end_date:
+            try:
+                valid_to = self._parse_date(str(end_date)).isoformat()
+            except ValueError:
+                pass
+        
+        return {
+            'day_of_week': day_of_week,
+            'lesson_number': int(lesson_number),
+            'subject': str(subject).strip(),
+            'room': str(room).strip() if room else None,
+            'teacher': str(teacher).strip() if teacher else None,
+            'note': str(note).strip() if note else None,
+            'valid_from': valid_from,
+            'valid_to': valid_to,
+        }
+
     def _normalize_mark(
         self, mark: dict[str, Any], subject: str
     ) -> dict[str, Any] | None:
