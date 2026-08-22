@@ -49,7 +49,6 @@ def migrate_timetable_entries(engine) -> None:
         conn.execute(text("""
         CREATE TABLE IF NOT EXISTS timetable_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            child_id INTEGER NOT NULL,
             day_of_week INTEGER NOT NULL,
             lesson_number INTEGER NOT NULL,
             subject TEXT NOT NULL,
@@ -58,9 +57,7 @@ def migrate_timetable_entries(engine) -> None:
             note TEXT,
             valid_from DATE,
             valid_to DATE,
-            FOREIGN KEY (child_id) REFERENCES children(id) ON DELETE CASCADE
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_timetable_child ON timetable_entries(child_id)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_timetable_day ON timetable_entries(day_of_week, lesson_number)"))
         conn.commit()
