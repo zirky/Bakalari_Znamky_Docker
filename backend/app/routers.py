@@ -1307,7 +1307,6 @@ def child_summary(
 
 @router.get('/child/timetable')
 async def get_child_timetable(
-    child_id: int,
     db: DbSession = Depends(get_db),
     current_user: object = Depends(current_parent),
 ):
