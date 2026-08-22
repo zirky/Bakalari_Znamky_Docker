@@ -1,10 +1,7 @@
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, Session, declarative_base
 from datetime import datetime
 from typing import Generator
-
-from .models import Base
-
 
 DATABASE_URL = "sqlite:///./bakalari.db"
 
@@ -13,6 +10,7 @@ engine = create_engine(
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+Base = declarative_base()
 
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
@@ -21,12 +19,10 @@ def get_db() -> Generator[Session, None, None]:
     finally:
         db.close()
 
-
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     migrate_sync_state(engine)
     migrate_timetable_entries(engine)
-
 
 def migrate_sync_state(engine) -> None:
     with engine.connect() as conn:
@@ -47,7 +43,6 @@ def migrate_sync_state(engine) -> None:
         except:
             pass
         conn.commit()
-
 
 def migrate_timetable_entries(engine) -> None:
     with engine.connect() as conn:
