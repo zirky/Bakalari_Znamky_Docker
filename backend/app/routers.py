@@ -545,7 +545,6 @@ def sync(
     db.commit()
 
     try:
-            try:
         service = BakalariService()
 
         fetched = service.fetch_grades()
@@ -569,8 +568,6 @@ def sync(
 
         run.grades_found = len(fetched)
         fetched_ids = set()
-
-            # beze změny pokračuje tvůj současný kód
 
         for item in fetched:
             external_id = str(item['external_id'])
