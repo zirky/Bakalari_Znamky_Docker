@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session as DbSession
 
 from ..config import get_settings
 from ..database import SessionLocal
-from ..models import AppSetting, Grade, Reward, RewardRule, SyncRun, SyncState, TimetableEntry
+from ..models import AppSetting, Grade, Reward, RewardRule, SyncRun, SyncState
 from ..school_year import school_year_for_date
 from ..services.bakalari import BakalariService
 from ..services.sync_schedule import next_sync_at
@@ -57,7 +57,7 @@ def _recover_stale_run(
     if state.sync_started_at is None:
         state.sync_status = 'failed'
         state.last_sync_error = (
-            'Nalezen neÃºplnÃ½ synchronizaÄ·nÃ¬ bÄºh bez Ä�asu zahÃ¡jenÃ¬.'
+            'Nalezen neúplný synchronizační běh bez času zahájení.'
         )
         state.consecutive_failures = int(
             state.consecutive_failures or 0
@@ -73,7 +73,7 @@ def _recover_stale_run(
 
     state.sync_status = 'failed'
     state.last_sync_error = (
-        'Synchronizace byla oznaÄ·ena jako neÃºspÄºÅ¡nÃ¡ po pÅ°ekroÄ·enÃ¬ '
+        'Synchronizace byla označena jako neúspěšná po překročení '
         f'timeoutu {timeout_minutes} minut.'
     )
     state.sync_started_at = None
@@ -86,8 +86,8 @@ def _recover_stale_run(
 
 def _run_bakalari_sync(db: DbSession, state: SyncState) -> None:
     """
-    SpustÃ¬ synchronizaci s BakalÃ¡Å°i.
-    StejnÃ½ kÃ³d jako v endpointu POST /api/parent/sync.
+    Spustí synchronizaci s Bakaláři.
+    Stejný kód jako v endpointu POST /api/parent/sync.
     """
     requested_from_date = state.sync_from_date
 
@@ -225,8 +225,8 @@ def _run_bakalari_sync(db: DbSession, state: SyncState) -> None:
         db.commit()
 
         logger.info(
-            'Synchronizace ÃspÄºÅ¡nÄº dokonÄ·ena; nalezeno %d znÃ¡mek, '
-            'novÃ½ch %d; dalÅ¡Ã¬ sync naplÃ¡novÃ¡n na %s',
+            'Synchronizace úspěšně dokončena; nalezeno %d známek, '
+            'nových %d; další sync naplánován na %s',
             run.grades_found,
             run.grades_new,
             state.next_sync_at.isoformat() if state.next_sync_at else 'N/A',
@@ -252,49 +252,14 @@ def _run_bakalari_sync(db: DbSession, state: SyncState) -> None:
         )
         raise
 
-    # Po ÃspÄºÅ¡nÃ©m naÄ·tenÃ¬ znÃ¡mek naÄ·ti i rozvrh
-    try:
-        timetable_entries = BakalariService().fetch_timetable()
-        
-        # SmaÅ¾ starÃ© zÃ¡znamy a vloÅ¾ novÃ©
-        db.query(TimetableEntry).filter_by(source='bakalari').delete()
-        
-        for entry_data in timetable_entries:
-            entry = TimetableEntry(
-                day_of_week=entry_data['day_of_week'],
-                hour=entry_data['hour'],
-                subject=entry_data['subject'],
-                room=entry_data.get('room'),
-                teacher=entry_data.get('teacher'),
-                group=entry_data.get('group'),
-                source=entry_data['source'],
-                external_id=entry_data['external_id'],
-            )
-            db.add(entry)
-        
-        db.commit()
-        
-        logger.info(
-            'Rozvrh naÄ·ten: %d poloÅ¾ek',
-            len(timetable_entries),
-        )
-        
-    except Exception as exc:
-        logger.warning(
-            'NaÄ·tenÃ¬ rozvrhu selhalo: %s',
-            str(exc),
-        )
-        # Nezastavuj celou synchronizaci kvÅ¯li rozvrhu
-        db.commit()
-
 
 def check_sync_scheduler() -> None:
     """
     Kontrola scheduleru synchronizace.
 
-    - OznaÄ·Ã¬ zaseknutÃ½ bÄºh jako failed.
-    - Pokud je next_sync_at v minulosti a interval nenÃ¬ 'manual',
-      spustÃ¬ synchronizaci s BakalÃ¡Å°i.
+    - Označí zaseknutý běh jako failed.
+    - Pokud je next_sync_at v minulosti a interval není 'manual',
+      spustí synchronizaci s Bakaláři.
     """
     db = SessionLocal()
 
@@ -314,12 +279,12 @@ def check_sync_scheduler() -> None:
 
         if interval not in {'manual', 'weekly', 'monthly'}:
             logger.warning(
-                'NeplatnÃ½ sync_interval %r; automatickÃ¡ synchronizace '
-                'zÅ¯stÃ¡vÃ¡ vypnutÃ¡.',
+                'Neplatný sync_interval %r; automatická synchronizace '
+                'zůstává vypnutá.',
                 interval,
             )
 
-        # Zkontroluj, zda je Ä�as spustit synchronizaci
+        # Zkontroluj, zda je čas spustit synchronizaci
         if (
             interval in {'weekly', 'monthly'}
             and state.next_sync_at is not None
@@ -327,7 +292,7 @@ def check_sync_scheduler() -> None:
             and state.sync_status != 'running'
         ):
             logger.info(
-                'Synchronizace je naplÃ¡novanÃ¡ na %s; spouÅ¡tÃ¬m...',
+                'Synchronizace je naplánovaná na %s; spouštím...',
                 state.next_sync_at.isoformat(),
             )
             _run_bakalari_sync(db, state)
@@ -354,7 +319,7 @@ async def run_sync_scheduler() -> None:
     )
 
     logger.info(
-        'Worker synchronizace byl spuÅ¡tÄºn; kontrolnÃ¬ interval: %s s.',
+        'Worker synchronizace byl spuštěn; kontrolní interval: %s s.',
         poll_seconds,
     )
 
@@ -363,5 +328,5 @@ async def run_sync_scheduler() -> None:
             check_sync_scheduler()
             await asyncio.sleep(poll_seconds)
     except asyncio.CancelledError:
-        logger.info('Worker synchronizace byl ukonÄ·en.')
+        logger.info('Worker synchronizace byl ukončen.')
         raise
