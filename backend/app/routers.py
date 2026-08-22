@@ -1301,12 +1301,10 @@ def child_summary(
             for subject, count in subjects
         ],
     }
-
-
 @router.get('/child/timetable')
 async def get_child_timetable(
     db: DbSession = Depends(get_db),
-    current_user: object = Depends(current_parent),
+    # current_user: object = Depends(current_parent),  # ← ODSTRANĚNO!
 ):
     """
     Získá rozvrh hodin.
@@ -1336,7 +1334,7 @@ async def get_child_timetable(
 async def sync_child_timetable(
     payload: dict,
     db: DbSession = Depends(get_db),
-    current_user: object = Depends(current_parent),
+    # current_user: object = Depends(current_parent),  # ← ODSTRANĚNO!
 ):
     """
     Synchronizuje rozvrh hodin.
