@@ -545,9 +545,32 @@ def sync(
     db.commit()
 
     try:
-        fetched = BakalariService().fetch_grades()
+            try:
+        service = BakalariService()
+
+        fetched = service.fetch_grades()
+        timetable_entries = service.get_timetable()
+
+        db.query(TimetableEntry).delete()
+
+        for item in timetable_entries:
+            db.add(
+                TimetableEntry(
+                    day_of_week=item['day_of_week'],
+                    lesson_number=item['lesson_number'],
+                    subject=item['subject'],
+                    room=item.get('room'),
+                    teacher=item.get('teacher'),
+                    note=item.get('note'),
+                    valid_from=item.get('valid_from'),
+                    valid_to=item.get('valid_to'),
+                )
+            )
+
         run.grades_found = len(fetched)
         fetched_ids = set()
+
+            # beze změny pokračuje tvůj současný kód
 
         for item in fetched:
             external_id = str(item['external_id'])
