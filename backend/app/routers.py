@@ -18,7 +18,6 @@ from .models import (
     SyncRun,
     SyncState,
     TimetableEntry,
-    Child,
 )
 from .school_year import school_year_for_date
 from .services.bakalari import BakalariService
@@ -1277,7 +1276,6 @@ def child_overview(
         },
     }
 
-
 @router.get('/child/summary')
 def child_summary(
     db: DbSession = Depends(get_db),
@@ -1306,20 +1304,6 @@ def child_summary(
 
 
 @router.get('/child/timetable')
-async def get_child_timetable(
-    db: DbSession = Depends(get_db),
-    current_user: object = Depends(current_parent),
-):
-    """
-    Získá rozvrh hodin pro dané dítě.
-    """
-    child = db.query(Child).filter(
-        Child.parent_user_id == current_user.id
-    ).first()
-    if not child:
-        raise HTTPException(status_code=404, detail="Child not found")
-
-   @router.get('/child/timetable')
 async def get_child_timetable(
     db: DbSession = Depends(get_db),
     current_user: object = Depends(current_parent),
