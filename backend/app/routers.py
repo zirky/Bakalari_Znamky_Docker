@@ -17,6 +17,7 @@ from .models import (
     RewardRule,
     SyncRun,
     SyncState,
+    TimetableEntry,
 )
 from .school_year import school_year_for_date
 from .services.bakalari import BakalariService
@@ -89,7 +90,7 @@ def _configured_start_date(db: DbSession) -> date:
     except ValueError as exc:
         raise HTTPException(
             422,
-            'Neplatné počáteční datum synchronizace',
+            'Neplatné·°počá·°tečnÃ¬ datum synchronizace',
         ) from exc
 
 
@@ -273,7 +274,7 @@ def add_rule(
     ).first():
         raise HTTPException(
             409,
-            'Pravidlo již existuje',
+            'Pravidlo jiÅ¾ existuje',
         )
 
     rule = RewardRule(**payload.model_dump())
@@ -312,7 +313,7 @@ def update_rule(
     if duplicate:
         raise HTTPException(
             409,
-            'Pravidlo pro tuto známku již existuje',
+            'Pravidlo pro tuto znÃ¡mku jiÅ¾ existuje',
         )
 
     rule.grade_value = payload.grade_value
@@ -401,7 +402,7 @@ def save_settings(
     }:
         raise HTTPException(
             422,
-            'Neplatný režim výplaty',
+            'NeplatnÃ½ reÅ¾im vÃ½platy',
         )
 
     if payload.sync_interval not in {
@@ -411,7 +412,7 @@ def save_settings(
     }:
         raise HTTPException(
             422,
-            'Neplatný interval synchronizace',
+            'NeplatnÃ½ interval synchronizace',
         )
 
     try:
@@ -419,7 +420,7 @@ def save_settings(
     except ValueError as exc:
         raise HTTPException(
             422,
-            'Neplatné počáteční datum synchronizace',
+            'NeplatnÃ© poÄ·Ã¡teÄ·nÃ¬ datum synchronizace',
         ) from exc
 
     previous_interval = _get_setting(
@@ -513,7 +514,7 @@ def sync(
     if payload.mode not in {'normal', 'backtest'}:
         raise HTTPException(
             422,
-            'Neplatný režim synchronizace',
+            'NeplatnÃ½ reÅ¾im synchronizace',
         )
 
     state = _get_sync_state(db)
@@ -521,7 +522,7 @@ def sync(
     if state.sync_status == 'running':
         raise HTTPException(
             409,
-            'Synchronizace již probíhá',
+            'Synchronizace jiÅ¾ probÃ¬hÃ¡',
         )
 
     requested_from_date = (
@@ -659,7 +660,6 @@ def sync(
             ),
         )
         state.sync_started_at = None
-        state.last_sync_error = None
         state.consecutive_failures = 0
 
         _refresh_running_balance(db, state)
@@ -779,7 +779,7 @@ def create_payout_draft(
     ) != 'draft':
         raise HTTPException(
             409,
-            'Draft payout není povolený',
+            'Draft payout nenÃ¬ povolenÃ½',
         )
 
     state = _get_sync_state(db)
@@ -802,19 +802,19 @@ def create_payout_draft(
     if eligible <= 0:
         raise HTTPException(
             409,
-            'Kladný zůstatek k výplatě není k dispozici',
+            'KladnÃ½ zÅ¯statek k vÃ½platÄº nenÃ¬ k dispozici',
         )
 
     if eligible < threshold:
         raise HTTPException(
             409,
-            'Zůstatek nedosahuje limitu výplaty',
+            'ZÅ¯statek nedosahuje limitu vÃ½platy',
         )
 
     if not ln_address or '@' not in ln_address:
         raise HTTPException(
             409,
-            'Lightning adresa není nastavena',
+            'Lightning adresa nenÃ¬ nastavena',
         )
 
     try:
@@ -826,7 +826,7 @@ def create_payout_draft(
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(
             503,
-            'Kurz pro přepočet není dostupný',
+            'Kurz pro pÅ°epoÄ·et nenÃ¬ dostupnÃ½',
         ) from exc
 
     active_draft = db.query(Payout).filter(
@@ -904,7 +904,7 @@ def simulate_confirm_payout(
     if payout.status != 'draft':
         raise HTTPException(
             409,
-            f'Payout má stav {payout.status} a nelze ho simulovat',
+            f'Payout mÃ¡ stav {payout.status} a nelze ho simulovat',
         )
 
     state = _get_sync_state(db)
@@ -914,7 +914,7 @@ def simulate_confirm_payout(
     if current_balance != payout.amount_czk:
         payout.status = 'stale'
         payout.error_message = (
-            'Stav účtu se od vytvoření draftu změnil.'
+            'Stav ÃÄ·tu se od vytvoÅ°enÃ¬ draftu zmÄºnil.'
         )
 
         _audit(
@@ -931,7 +931,7 @@ def simulate_confirm_payout(
 
         raise HTTPException(
             409,
-            'Stav účtu se změnil; vytvoř nový draft',
+            'Stav ÃÄ·tu se zmÄºnil; vytvoÅ° novÃ½ draft',
         )
 
     payout.status = 'simulated'
@@ -1000,7 +1000,7 @@ def manual_payout(
     ) != 'manual':
         raise HTTPException(
             409,
-            'Ruční payout není povolený',
+            'RuÄ·nÃ¬ payout nenÃ¬ povolenÃ½',
         )
 
     state = _get_sync_state(db)
@@ -1023,19 +1023,19 @@ def manual_payout(
     if eligible <= 0:
         raise HTTPException(
             409,
-            'Kladný zůstatek k výplatě není k dispozici',
+            'KladnÃ½ zÅ¯statek k vÃ½platÄº nenÃ¬ k dispozici',
         )
 
     if eligible < threshold:
         raise HTTPException(
             409,
-            'Zůstatek nedosahuje limitu výplaty',
+            'ZÅ¯statek nedosahuje limitu vÃ½platy',
         )
 
     if not ln_address or '@' not in ln_address:
         raise HTTPException(
             409,
-            'Lightning adresa není nastavena',
+            'Lightning adresa nenÃ¬ nastavena',
         )
 
     existing = db.query(Payout).filter(
@@ -1062,7 +1062,7 @@ def manual_payout(
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(
             503,
-            'Kurz pro přepočet není dostupný',
+            'Kurz pro pÅ°epoÄ·et nenÃ¬ dostupnÃ½',
         ) from exc
 
     payout = Payout(
@@ -1149,7 +1149,7 @@ def manual_payout(
 
         raise HTTPException(
             502,
-            'Platbu se nepodařilo odeslat',
+            'Platbu se nepodaÅ°ilo odeslat',
         ) from exc
 
 
@@ -1176,16 +1176,16 @@ def _available_school_years(db: DbSession) -> list[str]:
 
 def _validate_school_year(value: str) -> str:
     if len(value) != 9 or value[4] != '/':
-        raise HTTPException(422, 'Neplatný školní rok')
+        raise HTTPException(422, 'NeplatnÃ½ Å kolnÃ¬ rok')
 
     try:
         start_year = int(value[:4])
         end_year = int(value[5:])
     except ValueError as exc:
-        raise HTTPException(422, 'Neplatný školní rok') from exc
+        raise HTTPException(422, 'NeplatnÃ½ Å kolnÃ¬ rok') from exc
 
     if end_year != start_year + 1:
-        raise HTTPException(422, 'Neplatný školní rok')
+        raise HTTPException(422, 'NeplatnÃ½ Å kolnÃ¬ rok')
 
     return value
 
@@ -1300,4 +1300,52 @@ def child_summary(
             }
             for subject, count in subjects
         ],
+    }
+
+
+@router.get('/child/timetable')
+def child_timetable(
+    _: object = Depends(current_parent),
+    db: DbSession = Depends(get_db),
+):
+    """
+    VrÃ¡tÃ¬ rozvrh hodin pro aktuÃ¡lnÃ¬ Å kolnÃ¬ rok.
+    """
+    entries = db.query(TimetableEntry).order_by(
+        TimetableEntry.day_of_week,
+        TimetableEntry.hour,
+    ).all()
+
+    days = {
+        0: 'PondÄºlÃ¬',
+        1: 'ÃºterÃ½',
+        2: 'StÅ°eda',
+        3: 'Ä·tv rtek',
+        4: 'PÃ¡tek',
+        5: 'Sobota',
+        6: 'NedÄºle',
+    }
+
+    result = {
+        day_name: []
+        for day_name in days.values()
+    }
+
+    for entry in entries:
+        day_name = days.get(entry.day_of_week, 'NeznÃ¡mÃ½ den')
+        result[day_name].append({
+            'id': entry.id,
+            'hour': entry.hour,
+            'subject': entry.subject,
+            'room': entry.room,
+            'teacher': entry.teacher,
+            'group': entry.group,
+        })
+
+    for day_name in result:
+        result[day_name].sort(key=lambda x: x['hour'])
+
+    return {
+        'timetable': result,
+        'days': list(days.values()),
     }
