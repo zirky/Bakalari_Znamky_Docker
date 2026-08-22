@@ -1315,15 +1315,12 @@ async def get_child_timetable(
     Získá rozvrh hodin pro dané dítě.
     """
     child = db.query(Child).filter(
-        Child.id == child_id,
         Child.parent_user_id == current_user.id
     ).first()
     if not child:
         raise HTTPException(status_code=404, detail="Child not found")
 
-    entries = db.query(TimetableEntry).filter(
-        TimetableEntry.child_id == child_id
-    ).order_by(
+    entries = db.query(TimetableEntry).filter.order_by(
         TimetableEntry.day_of_week,
         TimetableEntry.lesson_number
     ).all()
