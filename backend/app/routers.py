@@ -1320,7 +1320,7 @@ async def get_child_timetable(
     if not child:
         raise HTTPException(status_code=404, detail="Child not found")
 
-    @router.get('/child/timetable')
+   @router.get('/child/timetable')
 async def get_child_timetable(
     db: DbSession = Depends(get_db),
     current_user: object = Depends(current_parent),
