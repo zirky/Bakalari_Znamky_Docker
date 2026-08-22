@@ -237,4 +237,4 @@ class AuthUser(Base):
     sessions: Mapped[List["Session"]] = relationship("Session", back_populates="user")
 
 
-class Ses
+class Session(Base)
