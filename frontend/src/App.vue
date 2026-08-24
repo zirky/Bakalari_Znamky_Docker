@@ -383,7 +383,7 @@ async function login() {
   message.value = ''
 
   try {
-    const response = await fetch('/api/auth/parent/login', {
+    const response = await fetch('http://100.109.143.57:8080/api/auth/parent/login', {
   method: 'POST',
   credentials: 'include',
   headers: {
