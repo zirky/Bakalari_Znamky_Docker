@@ -389,7 +389,9 @@ async function login() {
   headers: {
     'Content-Type': 'application/json',
   },
-  body: JSON.stringify(payload),
+  body: JSON.stringify({
+    pin: pin.value,
+  }),
 })
 
     backendAvailable.value = true
