@@ -144,7 +144,7 @@ class BakalariService:
             with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
                 prefix, token = self._authenticate(client)
                 response = client.get(
-                    self._api_url(prefix, '3/timetable/actual'),
+                    self._api_url(prefix, '3/timetable/pernament'),
                     headers={'Authorization': f'Bearer {token}'},
                 )
                 response.raise_for_status()
