@@ -1,332 +1,207 @@
-from __future__ import annotations
+"""
+Background worker that periodically syncs grades and timetable
+from Bakaláře for all configured parents.
 
-import asyncio
+- Grades: synced according to settings (disabled/manual/weekly/monthly)
+- Timetable: synced independently every 24 hours
+"""
+
 import logging
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, date
+from typing import Any
 
-from sqlalchemy.orm import Session as DbSession
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from ..config import get_settings
-from ..database import SessionLocal
-from ..models import AppSetting, Grade, Reward, RewardRule, SyncRun, SyncState
-from ..school_year import school_year_for_date
-from ..services.bakalari import BakalariService
-from ..services.sync_schedule import next_sync_at
+from ..database import engine
+from ..models import Parent, Settings, Grade, Child, TimetableEntry
+from .bakalari import BakalariService
 
-
-logger = logging.getLogger(__name__)
-
-
-def _get_setting(
-    db: DbSession,
-    key: str,
-    default: str = '',
-) -> str:
-    item = db.query(AppSetting).filter_by(key=key).first()
-
-    if item is None or item.value is None:
-        return default
-
-    return item.value
+logger = logging.getLogger("uvicorn")
 
 
-def _get_sync_state(db: DbSession) -> SyncState:
-    state = db.get(SyncState, 1)
-
-    if state is None:
-        state = SyncState(
-            id=1,
-            sync_status='never',
-            running_balance_czk=0,
-        )
-        db.add(state)
-        db.flush()
-
-    return state
-
-
-def _recover_stale_run(
-    state: SyncState,
-    now: datetime,
-) -> bool:
-    timeout_minutes = get_settings().sync_run_timeout_minutes
-
-    if state.sync_status != 'running':
-        return False
-
-    if state.sync_started_at is None:
-        state.sync_status = 'failed'
-        state.last_sync_error = (
-            'Nalezen neúplný synchronizační běh bez času zahájení.'
-        )
-        state.consecutive_failures = int(
-            state.consecutive_failures or 0
-        ) + 1
-        return True
-
-    timeout_at = state.sync_started_at + timedelta(
-        minutes=timeout_minutes
-    )
-
-    if timeout_at > now:
-        return False
-
-    state.sync_status = 'failed'
-    state.last_sync_error = (
-        'Synchronizace byla označena jako neúspěšná po překročení '
-        f'timeoutu {timeout_minutes} minut.'
-    )
-    state.sync_started_at = None
-    state.consecutive_failures = int(
-        state.consecutive_failures or 0
-    ) + 1
-
-    return True
-
-
-def _run_bakalari_sync(db: DbSession, state: SyncState) -> None:
+class SyncScheduler:
     """
-    Spustí synchronizaci s Bakaláři.
-    Stejný kód jako v endpointu POST /api/parent/sync.
+    Periodically synchronizes grades and timetable for all parents
+    that have Bakaláře credentials configured.
+    
+    - Grades: synced according to settings (disabled/manual/weekly/monthly)
+    - Timetable: synced independently every 24 hours
     """
-    requested_from_date = state.sync_from_date
 
-    run = SyncRun(
-        mode='normal',
-        from_date=requested_from_date,
-        status='running',
-    )
+    def __init__(self, sync_interval_seconds: int = 600):
+        self.sync_interval_seconds = sync_interval_seconds
+        self.bakalari = BakalariService()
+        self.last_timetable_sync: dict[int, datetime] = {}  # parent_id -> last sync time
 
-    state.sync_status = 'running'
-    state.sync_started_at = datetime.utcnow()
-    state.last_sync_error = None
+    def run_once(self) -> None:
+        """Run one synchronization cycle for all parents."""
+        with Session(engine) as session:
+            parents = session.execute(select(Parent)).scalars().all()
 
-    db.add(run)
-    db.commit()
-
-    try:
-        fetched = BakalariService().fetch_grades()
-        run.grades_found = len(fetched)
-        fetched_ids = set()
-
-        for item in fetched:
-            external_id = str(item['external_id'])
-            fetched_ids.add(external_id)
-            in_range = item['grade_date'] >= requested_from_date
-
-            grade = db.query(Grade).filter_by(
-                external_id=external_id
-            ).first()
-
-            if grade is None:
-                grade = Grade(
-                    **item,
-                    school_year=school_year_for_date(
-                        item['grade_date']
-                    ),
-                    active_in_sync=in_range,
-                )
-                db.add(grade)
-                db.flush()
-                run.grades_new += 1
-            else:
-                grade.subject = item['subject']
-                grade.grade_value = item['grade_value']
-                grade.grade_date = item['grade_date']
-                grade.school_year = school_year_for_date(
-                    grade.grade_date
-                )
-                grade.description = item.get('description')
-                grade.source = item.get(
-                    'source',
-                    grade.source,
-                )
-                grade.active_in_sync = in_range
-
-            reward = db.query(Reward).filter_by(
-                grade_id=grade.id
-            ).first()
-
-            rule = db.query(RewardRule).filter_by(
-                grade_value=grade.grade_value,
-                active=True,
-            ).first()
-
-            if not in_range:
-                if (
-                    reward is not None
-                    and reward.status == 'pending'
-                ):
-                    reward.status = 'superseded'
+        for parent in parents:
+            if not parent.bakalari_username or not parent.bakalari_password:
                 continue
 
-            if (
-                reward is not None
-                and reward.status == 'superseded'
-            ):
-                reward.status = 'pending'
+            try:
+                self._sync_parent(parent)
+            except Exception as e:
+                logger.error(f"Error syncing parent {parent.id}: {e}")
 
-            if rule is None:
-                if (
-                    reward is not None
-                    and reward.status == 'pending'
-                ):
-                    reward.amount_czk = 0
-                    reward.calculation_type = 'normal'
-            elif reward is None:
-                db.add(
-                    Reward(
-                        grade_id=grade.id,
-                        amount_czk=rule.reward_czk,
-                        calculation_type='normal',
+    def _sync_parent(self, parent: Parent) -> None:
+        """Synchronize grades and timetable for a single parent."""
+        with Session(engine) as session:
+            # Load settings
+            settings = session.execute(
+                select(Settings).where(Settings.parent_id == parent.id)
+            ).scalars().first()
+
+            if not settings:
+                logger.warning(f"No settings for parent {parent.id}")
+                return
+
+            # Determine sync_from date
+            sync_from = settings.sync_from_date
+            if not sync_from:
+                # Default to start of current school year (September 1st)
+                now = datetime.now()
+                sync_from = date(now.year - 1, 9, 1) if now.month < 9 else date(now.year, 9, 1)
+                settings.sync_from_date = sync_from
+                session.add(settings)
+                session.commit()
+
+            # Sync grades according to settings
+            self._sync_grades_if_needed(session, parent, settings, sync_from)
+
+            # Sync timetable independently (every 24 hours)
+            self._sync_timetable_if_needed(session, parent)
+
+    def _sync_grades_if_needed(self, session: Session, parent: Parent, settings: Settings, sync_from: date) -> None:
+        """Synchronize grades if interval has passed."""
+        # Check if sync is enabled
+        if settings.sync_interval == "manual":
+            return  # Manual sync only
+        
+        if settings.sync_interval == "disabled":
+            return  # Sync disabled
+
+        # Check if enough time has passed
+        now = datetime.now()
+        last_sync = settings.last_sync_at
+        
+        interval_map = {
+            "weekly": timedelta(days=7),
+            "monthly": timedelta(days=30),
+        }
+        
+        required_interval = interval_map.get(settings.sync_interval, timedelta(days=7))
+        
+        if last_sync and (now - last_sync) < required_interval:
+            return  # Not time yet
+
+        # Perform sync
+        self._sync_grades(session, parent, sync_from)
+        
+        # Update last sync time
+        settings.last_sync_at = now
+        session.add(settings)
+        session.commit()
+
+    def _sync_grades(self, session: Session, parent: Parent, sync_from: date) -> None:
+        """Synchronize grades for a single parent."""
+        try:
+            subjects = self.bakalari.login_and_fetch_subjects(
+                parent.bakalari_username,
+                parent.bakalari_password,
+            )
+        except Exception as e:
+            logger.error(f"Bakaláře login failed for {parent.id}: {e}")
+            return
+
+        for subject in subjects:
+            for grade in subject['grades']:
+                if grade['date'] < sync_from:
+                    continue
+
+                # Check if grade already exists
+                exists = session.execute(
+                    select(Grade).where(
+                        Grade.parent_id == parent.id,
+                        Grade.grade_date == grade['date'],
+                        Grade.subject == grade['subject'],
+                        Grade.grade_value == grade['grade'],
                     )
+                ).scalars().first()
+
+                if exists:
+                    continue
+
+                # Create new grade
+                new_grade = Grade(
+                    parent_id=parent.id,
+                    grade_date=grade['date'],
+                    subject=grade['subject'],
+                    grade_value=grade['grade'],
+                    description=grade.get('description', ''),
                 )
-            elif reward.status == 'pending':
-                reward.amount_czk = rule.reward_czk
-                reward.calculation_type = 'normal'
+                session.add(new_grade)
 
-        for grade in db.query(Grade).filter(
-            Grade.source == 'bakalari'
-        ).all():
-            if grade.external_id not in fetched_ids:
-                grade.active_in_sync = False
+            session.commit()
 
-                reward = db.query(Reward).filter_by(
-                    grade_id=grade.id
-                ).first()
+    def _sync_timetable_if_needed(self, session: Session, parent: Parent) -> None:
+        """Synchronize timetable if 24 hours have passed."""
+        now = datetime.now()
+        last_sync = self.last_timetable_sync.get(parent.id)
+        
+        # Sync every 24 hours
+        if last_sync and (now - last_sync) < timedelta(hours=24):
+            return  # Not time yet
 
-                if (
-                    reward is not None
-                    and reward.status == 'pending'
-                ):
-                    reward.status = 'superseded'
+        # Perform sync
+        self._sync_timetable(session, parent)
+        
+        # Update last sync time
+        self.last_timetable_sync[parent.id] = now
 
-        completed_at = datetime.utcnow()
-        sync_interval = _get_setting(
-            db,
-            'sync_interval',
-            'manual',
-        )
-
-        run.status = 'success'
-        run.finished_at = completed_at
-
-        state.sync_status = 'success'
-        state.last_sync_at = completed_at
-        state.next_sync_at = next_sync_at(
-            sync_interval,
-            now=completed_at.replace(
-                tzinfo=datetime.now().astimezone().tzinfo
-            ),
-        )
-        state.sync_started_at = None
-        state.consecutive_failures = 0
-
-        db.commit()
-
-        logger.info(
-            'Synchronizace úspěšně dokončena; nalezeno %d známek, '
-            'nových %d; další sync naplánován na %s',
-            run.grades_found,
-            run.grades_new,
-            state.next_sync_at.isoformat() if state.next_sync_at else 'N/A',
-        )
-
-    except Exception as exc:
-        run.status = 'failed'
-        run.error_message = str(exc)
-        run.finished_at = datetime.utcnow()
-
-        state.sync_status = 'failed'
-        state.sync_started_at = None
-        state.last_sync_error = str(exc)
-        state.consecutive_failures = int(
-            state.consecutive_failures or 0
-        ) + 1
-
-        db.commit()
-
-        logger.exception(
-            'Synchronizace selhala: %s',
-            str(exc),
-        )
-        raise
-
-
-def check_sync_scheduler() -> None:
-    """
-    Kontrola scheduleru synchronizace.
-
-    - Označí zaseknutý běh jako failed.
-    - Pokud je next_sync_at v minulosti a interval není 'manual',
-      spustí synchronizaci s Bakaláři.
-    """
-    db = SessionLocal()
-
-    try:
-        state = _get_sync_state(db)
-        interval = _get_setting(
-            db,
-            'sync_interval',
-            'manual',
-        )
-        now = datetime.utcnow()
-
-        state_changed = _recover_stale_run(
-            state,
-            now,
-        )
-
-        if interval not in {'manual', 'weekly', 'monthly'}:
-            logger.warning(
-                'Neplatný sync_interval %r; automatická synchronizace '
-                'zůstává vypnutá.',
-                interval,
+    def _sync_timetable(self, session: Session, parent: Parent) -> None:
+        """Synchronize timetable for a single parent."""
+        try:
+            timetable = self.bakalari.get_timetable(
+                parent.bakalari_username,
+                parent.bakalari_password,
             )
+        except Exception as e:
+            logger.error(f"Bakaláře timetable fetch failed for {parent.id}: {e}")
+            return
 
-        # Zkontroluj, zda je čas spustit synchronizaci
-        if (
-            interval in {'weekly', 'monthly'}
-            and state.next_sync_at is not None
-            and state.next_sync_at <= now
-            and state.sync_status != 'running'
-        ):
-            logger.info(
-                'Synchronizace je naplánovaná na %s; spouštím...',
-                state.next_sync_at.isoformat(),
-            )
-            _run_bakalari_sync(db, state)
-            state_changed = True
+        if not timetable:
+            logger.info(f"No timetable for parent {parent.id}")
+            return
 
-        if state_changed:
-            db.commit()
-
-    except Exception:
-        db.rollback()
-        logger.exception(
-            'Kontrola scheduleru synchronizace selhala.'
+        # Smazat staré¿° rozvrh
+        session.execute(
+            TimetableEntry.__table__.delete()
         )
 
-    finally:
-        db.close()
+        # P?idat nový rozvrh
+        for lesson in timetable:
+            entry = TimetableEntry(
+                day_of_week=lesson['day'],
+                lesson_number=lesson['hour'],
+                subject=lesson['subject'],
+                room=lesson.get('room'),
+                teacher=lesson.get('teacher'),
+                note=lesson.get('note'),
+            )
+            session.add(entry)
 
+        session.commit()
+        logger.info(f"Timetable synced for parent {parent.id}: {len(timetable)} lessons")
 
-async def run_sync_scheduler() -> None:
-    settings = get_settings()
-    poll_seconds = max(
-        int(settings.sync_worker_poll_seconds),
-        600,  # 10 minut
-    )
-
-    logger.info(
-        'Worker synchronizace byl spuštěn; kontrolní interval: %s s.',
-        poll_seconds,
-    )
-
-    try:
+    def start(self) -> None:
+        """Start the background scheduler."""
+        logger.info(f"Starting sync scheduler (interval: {self.sync_interval_seconds}s)")
         while True:
-            check_sync_scheduler()
-            await asyncio.sleep(poll_seconds)
-    except asyncio.CancelledError:
-        logger.info('Worker synchronizace byl ukončen.')
-        raise
+            self.run_once()
+            time.sleep(self.sync_interval_seconds)
