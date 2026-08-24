@@ -39,6 +39,10 @@ const editingId = ref(null)
 const ruleMessage = ref('')
 const syncMessage = ref('')
 const backendAvailable = ref(true)
+const timetable = ref([])
+const timetableLoading = ref(false)
+const timetableMessage = ref('')
+const childTab = ref('averages')
 
 const IDLE_MS = 60000
 let idleTimer = null
@@ -145,7 +149,26 @@ async function loadChildOverview(
 async function changeChildSchoolYear() {
   await loadChildOverview(selectedSchoolYear.value)
 }
+async function loadTimetable() {
+  timetableLoading.value = true
+  timetableMessage.value = ''
+  try {
+    timetable.value = await getJson('/api/child/timetable')
+  } catch {
+    timetable.value = []
+    timetableMessage.value = 'Rozvrh se nepodařilo načíst.'
+  } finally {
+    timetableLoading.value = false
+  }
+}
 
+function timetableDayName(day) {
+  return { 1: 'Pondělí', 2: 'Úterý', 3: 'Středa', 4: 'Čtvrtek', 5: 'Pátek' }[day] || ''
+}
+
+function timetableForDay(day) {
+  return timetable.value.filter(l => l.day_of_week === day).sort((a, b) => a.lesson_number - b.lesson_number)
+}
 async function loadParentSection() {
   try {
     if (active.value === 'dashboard') {
@@ -360,12 +383,14 @@ async function login() {
   message.value = ''
 
   try {
-    const response = await apiFetch('/api/auth/parent/login', {
-      method: 'POST',
-      body: JSON.stringify({
-        pin: pin.value
-      })
-    })
+    const response = await fetch('/api/auth/parent/login', {
+  method: 'POST',
+  credentials: 'include',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify(payload),
+})
 
     backendAvailable.value = true
 
@@ -695,37 +720,15 @@ onBeforeUnmount(() => {
           </label>
         </div>
 
-        <div class="cards">
-          <div>
-            Vybraný školní rok
-            <strong>
-              {{ childOverview.selected_school_year || '—' }}
-            </strong>
-          </div>
+        <div class="child-tabs">
+  <button :class="{ selected: childTab === 'averages' }" type="button" @click="childTab = 'averages'">Průměry podle předmětu</button>
+  <button :class="{ selected: childTab === 'grades' }" type="button" @click="childTab = 'grades'">Seznam známek</button>
+  <button :class="{ selected: childTab === 'timetable' }" type="button" @click="childTab = 'timetable'; loadTimetable()">Rozvrh hodin</button>
+</div>
+        
 
-          <div>
-            Počet známek
-            <strong>
-              {{ childOverview.grades?.length || 0 }}
-            </strong>
-          </div>
-
-          <div>
-            Vyplaceno
-            <strong>
-              {{ childOverview.reward_summary?.paid_czk ?? 0 }} Kč
-            </strong>
-          </div>
-
-          <div>
-            Počet výplat
-            <strong>
-              {{ childOverview.reward_summary?.paid_payout_count ?? 0 }}
-            </strong>
-          </div>
-        </div>
-
-        <h3>Průměry podle předmětu</h3>
+        <div v-if="childTab === 'averages'">
+  <h3>Průměry podle předmětu</h3>
 
         <p v-if="!childOverview.subjects?.length">
           Pro vybraný školní rok nejsou k dispozici číselné známky.
@@ -751,8 +754,10 @@ onBeforeUnmount(() => {
             </tr>
           </tbody>
         </table>
+          </div>
 
-        <h3>Seznam známek</h3>
+        <div v-if="childTab === 'grades'">
+  <h3>Seznam známek</h3>
 
         <p v-if="!childOverview.grades?.length">
           Pro vybraný školní rok nejsou načtené žádné známky.
@@ -785,6 +790,25 @@ onBeforeUnmount(() => {
             </tbody>
           </table>
         </div>
+       </div>
+        <div v-if="childTab === 'timetable'" class="timetable-section">
+  <h3>Rozvrh hodin</h3>
+  <p v-if="timetableLoading">Načítám rozvrh…</p>
+  <p v-else-if="timetableMessage" class="error">{{ timetableMessage }}</p>
+  <p v-else-if="!timetable.length">Rozvrh není k dispozici.</p>
+  <div v-else class="timetable-grid">
+    <section v-for="day in [1, 2, 3, 4, 5]" :key="day" class="timetable-day">
+      <h3>{{ timetableDayName(day) }}</h3>
+      <article v-for="lesson in timetableForDay(day)" :key="lesson.id" class="lesson-card">
+        <span class="lesson-number">{{ lesson.lesson_number }}.</span>
+        <strong>{{ lesson.subject }}</strong>
+        <span v-if="lesson.room">Učebna: {{ lesson.room }}</span>
+        <span v-if="lesson.teacher">{{ lesson.teacher }}</span>
+        <span v-if="lesson.note">{{ lesson.note }}</span>
+      </article>
+    </section>
+  </div>
+</div>
       </section>
     </section>
 
@@ -1835,3 +1859,16 @@ small {
   }
 }
 </style>
+.child-tabs { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0; }
+.child-tabs button { border: 1px solid #475569; border-radius: 10px; padding: 10px 16px; background: #1e293b; color: #f8fafc; }
+.child-tabs button.selected { border-color: #60a5fa; background: #2563eb; }
+.timetable-section h3 { margin-top: 24px; }
+.timetable-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
+.timetable-day { min-width: 0; padding: 14px; border: 1px solid #334155; border-radius: 14px; background: #1e293b; }
+.timetable-day h3 { margin-bottom: 14px; color: #60a5fa; }
+.lesson-card { display: grid; gap: 5px; margin-bottom: 10px; padding: 10px; border: 1px solid #475569; border-radius: 10px; background: #172033; color: #cbd5e1; }
+.lesson-card:last-child { margin-bottom: 0; }
+.lesson-card strong { color: #f8fafc; }
+.lesson-number { color: #60a5fa; font-weight: 700; }
+@media (max-width: 900px) { .timetable-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .timetable-grid { grid-template-columns: 1fr; } .child-tabs { display: grid; } .child-tabs button { width: 100%; } }
