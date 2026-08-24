@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 from sqlalchemy.orm import Session as DbSession
 
 from ..config import get_settings
 from ..database import SessionLocal
-from ..models import AppSetting, Grade, Reward, RewardRule, SyncRun, SyncState
+from ..models import AppSetting, Grade, Reward, RewardRule, SyncRun, SyncState, TimetableEntry
 from ..school_year import school_year_for_date
 from ..services.bakalari import BakalariService
 from ..services.sync_schedule import next_sync_at
@@ -57,7 +57,7 @@ def _recover_stale_run(
     if state.sync_started_at is None:
         state.sync_status = 'failed'
         state.last_sync_error = (
-            'Nalezen neúplný synchronizační běh bez času zahájení.'
+            'Nalezen ne�pln� synchroniza�n� b�h bez �asu zah�jen�.'
         )
         state.consecutive_failures = int(
             state.consecutive_failures or 0
@@ -73,7 +73,7 @@ def _recover_stale_run(
 
     state.sync_status = 'failed'
     state.last_sync_error = (
-        'Synchronizace byla označena jako neúspěšná po překročení '
+        'Synchronizace byla ozna�ena jako ne�sp�šn� po p�ekro�en� '
         f'timeoutu {timeout_minutes} minut.'
     )
     state.sync_started_at = None
@@ -86,8 +86,8 @@ def _recover_stale_run(
 
 def _run_bakalari_sync(db: DbSession, state: SyncState) -> None:
     """
-    Spustí synchronizaci s Bakaláři.
-    Stejný kód jako v endpointu POST /api/parent/sync.
+    Spust� synchronizaci s Bakal��i.
+    Stejn� k�d jako v endpointu POST /api/parent/sync.
     """
     requested_from_date = state.sync_from_date
 
@@ -102,7 +102,7 @@ def _run_bakalari_sync(db: DbSession, state: SyncState) -> None:
     state.last_sync_error = None
 
     db.add(run)
-    db.commit()
+    db.flush()
 
     try:
         fetched = BakalariService().fetch_grades()
@@ -225,8 +225,8 @@ def _run_bakalari_sync(db: DbSession, state: SyncState) -> None:
         db.commit()
 
         logger.info(
-            'Synchronizace úspěšně dokončena; nalezeno %d známek, '
-            'nových %d; další sync naplánován na %s',
+            'Synchronizace �sp�šn� dokon�ena; nalezeno %d zn�mek, '
+            'nov�ch %d; dalš� sync napl�nov�n na %s',
             run.grades_found,
             run.grades_new,
             state.next_sync_at.isoformat() if state.next_sync_at else 'N/A',
@@ -253,14 +253,58 @@ def _run_bakalari_sync(db: DbSession, state: SyncState) -> None:
         raise
 
 
+def _sync_timetable(db: DbSession) -> None:
+    """
+    Synchronizuje rozvrh hodin z Bakal��.
+    Spoušt� se nevisle na synchronizaci zn�mek (každ�ch 24 hodin).
+    """
+    try:
+        # Z�skat rozvrh z Bakal��
+        bakalari = BakalariService()
+        timetable = bakalari.get_timetable()
+
+        if not timetable:
+            logger.info('Rozvrh nen� k dispozici.')
+            return
+
+        # Smazat star� rozvrh
+        db.query(TimetableEntry).delete()
+
+        # P�idat nov� rozvrh
+        for lesson in timetable:
+            entry = TimetableEntry(
+                day_of_week=lesson['day'],
+                lesson_number=lesson['hour'],
+                subject=lesson['subject'],
+                room=lesson.get('room'),
+                teacher=lesson.get('teacher'),
+                note=lesson.get('note'),
+            )
+            db.add(entry)
+
+        db.commit()
+        logger.info(f'Rozvrh synchronizov�n: {len(timetable)} hodin.')
+
+    except Exception as exc:
+        db.rollback()
+        logger.exception(f'Synchronizace rozvrhu selhala: {exc}')
+
+
+# Track last timetable sync per session (in-memory)
+_last_timetable_sync: datetime | None = None
+
+
 def check_sync_scheduler() -> None:
     """
     Kontrola scheduleru synchronizace.
 
-    - Označí zaseknutý běh jako failed.
-    - Pokud je next_sync_at v minulosti a interval není 'manual',
-      spustí synchronizaci s Bakaláři.
+    - Ozna�� zaseknut� b�h jako failed.
+    - Pokud je next_sync_at v minulosti a interval nen� 'manual',
+      spust� synchronizaci s Bakal��i.
+    - Rozvrh synchronizuje nevisle (každ�ch 24 hodin).
     """
+    global _last_timetable_sync
+
     db = SessionLocal()
 
     try:
@@ -279,12 +323,12 @@ def check_sync_scheduler() -> None:
 
         if interval not in {'manual', 'weekly', 'monthly'}:
             logger.warning(
-                'Neplatný sync_interval %r; automatická synchronizace '
-                'zůstává vypnutá.',
+                'Neplatn� sync_interval %r; automatick� synchronizace '
+                'z�st�v� vypnut�.',
                 interval,
             )
 
-        # Zkontroluj, zda je čas spustit synchronizaci
+        # Zkontroluj, zda je �as spustit synchronizaci
         if (
             interval in {'weekly', 'monthly'}
             and state.next_sync_at is not None
@@ -292,11 +336,20 @@ def check_sync_scheduler() -> None:
             and state.sync_status != 'running'
         ):
             logger.info(
-                'Synchronizace je naplánovaná na %s; spouštím...',
+                'Synchronizace je napl�novan� na %s; spoušt�m...',
                 state.next_sync_at.isoformat(),
             )
             _run_bakalari_sync(db, state)
             state_changed = True
+
+        # Synchronizuj rozvrh (každ�ch 24 hodin)
+        if (
+            _last_timetable_sync is None
+            or (now - _last_timetable_sync) >= timedelta(hours=24)
+        ):
+            logger.info('Synchronizuji rozvrh hodin...')
+            _sync_timetable(db)
+            _last_timetable_sync = now
 
         if state_changed:
             db.commit()
@@ -319,7 +372,7 @@ async def run_sync_scheduler() -> None:
     )
 
     logger.info(
-        'Worker synchronizace byl spuštěn; kontrolní interval: %s s.',
+        'Worker synchronizace byl spuštěn; kontroln� interval: %s s.',
         poll_seconds,
     )
 
@@ -328,5 +381,5 @@ async def run_sync_scheduler() -> None:
             check_sync_scheduler()
             await asyncio.sleep(poll_seconds)
     except asyncio.CancelledError:
-        logger.info('Worker synchronizace byl ukončen.')
+        logger.info('Worker synchronizace byl ukon�en.')
         raise
