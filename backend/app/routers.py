@@ -17,7 +17,6 @@ from .models import (
     RewardRule,
     SyncRun,
     SyncState,
-    TimetableEntry,
 )
 from .school_year import school_year_for_date
 from .services.bakalari import BakalariService
@@ -545,27 +544,7 @@ def sync(
     db.commit()
 
     try:
-        service = BakalariService()
-
-        fetched = service.fetch_grades()
-        timetable_entries = service.get_timetable()
-
-        db.query(TimetableEntry).delete()
-
-        for item in timetable_entries:
-            db.add(
-                TimetableEntry(
-                    day_of_week=item['day_of_week'],
-                    lesson_number=item['lesson_number'],
-                    subject=item['subject'],
-                    room=item.get('room'),
-                    teacher=item.get('teacher'),
-                    note=item.get('note'),
-                    valid_from=item.get('valid_from'),
-                    valid_to=item.get('valid_to'),
-                )
-            )
-
+        fetched = BakalariService().fetch_grades()
         run.grades_found = len(fetched)
         fetched_ids = set()
 
@@ -1296,6 +1275,7 @@ def child_overview(
         },
     }
 
+
 @router.get('/child/summary')
 def child_summary(
     db: DbSession = Depends(get_db),
@@ -1321,62 +1301,3 @@ def child_summary(
             for subject, count in subjects
         ],
     }
-@router.get('/child/timetable')
-async def get_child_timetable(
-    db: DbSession = Depends(get_db),
-    # current_user: object = Depends(current_parent),  # ← ODSTRANĚNO!
-):
-    """
-    Získá rozvrh hodin.
-    """
-    entries = db.query(TimetableEntry).order_by(
-        TimetableEntry.day_of_week,
-        TimetableEntry.lesson_number
-    ).all()
-
-    return [
-        {
-            'id': e.id,
-            'day_of_week': e.day_of_week,
-            'lesson_number': e.lesson_number,
-            'subject': e.subject,
-            'room': e.room,
-            'teacher': e.teacher,
-            'note': e.note,
-            'valid_from': e.valid_from.isoformat() if e.valid_from else None,
-            'valid_to': e.valid_to.isoformat() if e.valid_to else None,
-        }
-        for e in entries
-    ]
-
-
-@router.post('/child/timetable/sync')
-async def sync_child_timetable(
-    payload: dict,
-    db: DbSession = Depends(get_db),
-    # current_user: object = Depends(current_parent),  # ← ODSTRANĚNO!
-):
-    """
-    Synchronizuje rozvrh hodin.
-    payload: {"entries": [...]}
-    """
-    new_entries = payload["entries"]
-
-    # Smaž všechny existující záznamy
-    db.query(TimetableEntry).delete()
-
-    for e in new_entries:
-        entry = TimetableEntry(
-            day_of_week=e["day_of_week"],
-            lesson_number=e["lesson_number"],
-            subject=e["subject"],
-            room=e.get("room"),
-            teacher=e.get("teacher"),
-            note=e.get("note"),
-            valid_from=date.fromisoformat(e["valid_from"]) if e.get("valid_from") else None,
-            valid_to=date.fromisoformat(e["valid_to"]) if e.get("valid_to") else None,
-        )
-        db.add(entry)
-
-    db.commit()
-    return {"status": "ok", "count": len(new_entries)}
