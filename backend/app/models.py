@@ -78,21 +78,6 @@ class Session(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime)
 
 
-class Child(Base):
-    __tablename__ = 'children'
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(100))
-    pin_hash: Mapped[str] = mapped_column(String(255))
-    bakalari_student_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    bakalari_class_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    reward_per_grade: Mapped[float] = mapped_column(Float, default=0.0)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-    )
-
-
 class Grade(Base):
     __tablename__ = 'grades'
 
@@ -363,24 +348,6 @@ class PayoutAudit(Base):
         Text,
         nullable=True,
     )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-    )
-
-
-class TimetableEntry(Base):
-    __tablename__ = 'timetable_entries'
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    day_of_week: Mapped[int] = mapped_column(Integer)
-    lesson_number: Mapped[int] = mapped_column(Integer)
-    subject: Mapped[str] = mapped_column(String(120))
-    room: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    teacher: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    valid_from: Mapped[date | None] = mapped_column(Date, nullable=True)
-    valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
