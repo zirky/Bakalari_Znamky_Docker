@@ -383,16 +383,12 @@ async function login() {
   message.value = ''
 
   try {
-    const response = await fetch('http://100.109.143.57:8080/api/auth/parent/login', {
-  method: 'POST',
-  credentials: 'include',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify({
-    pin: pin.value,
-  }),
-})
+    const response = await apiFetch('/api/auth/parent/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        pin: pin.value
+      })
+    })
 
     backendAvailable.value = true
 
