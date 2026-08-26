@@ -125,6 +125,8 @@ class SchedulerState(Base):
     last_payout_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
     last_payout_amount_czk: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_payout_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Nové pole pro jednorázové potvrzení změny režimu
+    auto_payout_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
