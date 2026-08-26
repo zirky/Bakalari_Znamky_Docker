@@ -1,38 +1,24 @@
-from datetime import datetime, date
+from __future__ import annotations
+
+from datetime import date, datetime
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
-    Date,
+    Column,
     DateTime,
+    Date,
     Float,
     ForeignKey,
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
-from sqlalchemy.orm import Mapped, mapped_column
-
-from .database import Base
+from sqlalchemy.orm import declarative_base, relationship
 
 
-class AppSetting(Base):
-    __tablename__ = 'settings'
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    key: Mapped[str] = mapped_column(
-        String(100),
-        unique=True,
-        index=True,
-    )
-    value: Mapped[str | None] = mapped_column(
-        String(500),
-        nullable=True,
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
+Base = declarative_base()
 
 
 class AuthUser(Base):
@@ -46,309 +32,152 @@ class AuthUser(Base):
     )
     pin_hash: Mapped[str] = mapped_column(String(255))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-    )
-    last_login_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
 
 
 class Session(Base):
     __tablename__ = 'sessions'
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    token_hash: Mapped[str] = mapped_column(
-        String(64),
-        unique=True,
-        index=True,
-    )
-    user_id: Mapped[int] = mapped_column(Integer)
-    role: Mapped[str] = mapped_column(String(20), index=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-    )
-    last_activity_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-    )
-    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    id = Column(Integer, primary_key=True)
+    token = Column(String, unique=True, nullable=False)
+    user_id = Column(Integer, ForeignKey('auth_users.id', ondelete='CASCADE'), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship('AuthUser', backref='sessions')
+
+
+class AppSetting(Base):
+    __tablename__ = 'app_settings'
+
+    id = Column(Integer, primary_key=True)
+    key = Column(String, unique=True, nullable=False)
+    value = Column(String, nullable=True)
+
+
+class SyncState(Base):
+    __tablename__ = 'sync_states'
+
+    id = Column(Integer, primary_key=True)
+    sync_status = Column(String, nullable=False, default='never')
+    last_sync_at = Column(DateTime, nullable=True)
+    next_sync_at = Column(DateTime, nullable=True)
+    sync_started_at = Column(DateTime, nullable=True)
+    sync_from_date = Column(Date, nullable=True)
+    last_sync_error = Column(String, nullable=True)
+    consecutive_failures = Column(Integer, default=0, nullable=False)
+    running_balance_czk = Column(Integer, default=0, nullable=False)
+    
+    # Nové·°pole pro payout
+    last_payout_at = Column(DateTime, nullable=True)
+
+
+class SyncRun(Base):
+    __tablename__ = 'sync_runs'
+
+    id = Column(Integer, primary_key=True)
+    mode = Column(String, nullable=False)
+    from_date = Column(Date, nullable=False)
+    status = Column(String, nullable=False)
+    grades_found = Column(Integer, default=0, nullable=False)
+    grades_new = Column(Integer, default=0, nullable=False)
+    error_message = Column(String, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class Grade(Base):
     __tablename__ = 'grades'
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    external_id: Mapped[str] = mapped_column(
-        String(255),
-        unique=True,
-        index=True,
-    )
-    subject: Mapped[str] = mapped_column(String(120), index=True)
-    grade_value: Mapped[str] = mapped_column(String(20))
-    grade_date: Mapped[date] = mapped_column(Date, index=True)
-    school_year: Mapped[str | None] = mapped_column(
-        String(9),
-        nullable=True,
-        index=True,
-    )
-    description: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
-    source: Mapped[str] = mapped_column(
-        String(30),
-        default='manual',
-    )
-    active_in_sync: Mapped[bool] = mapped_column(
-        Boolean,
-        default=True,
-        index=True,
-    )
-    created_at: Mapped[datetime] = mapped_column(
+    id = Column(Integer, primary_key=True)
+    external_id = Column(String, unique=True, nullable=False)
+    subject = Column(String, nullable=False)
+    grade_value = Column(String, nullable=False)
+    grade_date = Column(Date, nullable=False)
+    description = Column(String, nullable=True)
+    school_year = Column(String, nullable=True)
+    source = Column(String, default='bakalari', nullable=False)
+    active_in_sync = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
         DateTime,
         default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    rewards = relationship(
+        'Reward',
+        back_populates='grade',
+        cascade='all, delete-orphan',
     )
 
 
 class RewardRule(Base):
     __tablename__ = 'reward_rules'
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    grade_value: Mapped[str] = mapped_column(
-        String(20),
-        unique=True,
-        index=True,
-    )
-    reward_czk: Mapped[int] = mapped_column(Integer, default=0)
-    active: Mapped[bool] = mapped_column(Boolean, default=True)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
+    id = Column(Integer, primary_key=True)
+    grade_value = Column(String, unique=True, nullable=False)
+    reward_czk = Column(Integer, nullable=False)
+    active = Column(Boolean, default=True, nullable=False)
 
 
 class Reward(Base):
     __tablename__ = 'rewards'
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    grade_id: Mapped[int] = mapped_column(
-        ForeignKey('grades.id'),
-        unique=True,
-    )
-    amount_czk: Mapped[int] = mapped_column(Integer)
-    status: Mapped[str] = mapped_column(
-        String(30),
-        default='pending',
-        index=True,
-    )
-    calculation_type: Mapped[str] = mapped_column(
-        String(30),
-        default='normal',
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-    )
-
-
-class SyncRun(Base):
-    __tablename__ = 'sync_runs'
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    mode: Mapped[str] = mapped_column(String(30))
-    from_date: Mapped[date | None] = mapped_column(
-        Date,
-        nullable=True,
-    )
-    grades_found: Mapped[int] = mapped_column(Integer, default=0)
-    grades_new: Mapped[int] = mapped_column(Integer, default=0)
-    status: Mapped[str] = mapped_column(
-        String(30),
-        default='running',
-    )
-    error_message: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-    )
-    finished_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
-
-class SyncState(Base):
-    __tablename__ = 'sync_state'
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    last_sync_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-    next_sync_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-    sync_started_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-    sync_from_date: Mapped[date | None] = mapped_column(
-        Date,
-        nullable=True,
-    )
-    sync_status: Mapped[str] = mapped_column(
-        String(30),
-        default='never',
-    )
-    last_sync_error: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
-    consecutive_failures: Mapped[int] = mapped_column(
+    id = Column(Integer, primary_key=True)
+    grade_id = Column(
         Integer,
-        default=0,
+        ForeignKey('grades.id', ondelete='CASCADE'),
+        nullable=False,
     )
-    running_balance_czk: Mapped[int] = mapped_column(
-        Integer,
-        default=0,
-    )
-    updated_at: Mapped[datetime] = mapped_column(
+    amount_czk = Column(Integer, nullable=False)
+    status = Column(String, default='pending', nullable=False)
+    calculation_type = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
         DateTime,
         default=datetime.utcnow,
         onupdate=datetime.utcnow,
+        nullable=False,
     )
 
-
-class SchedulerState(Base):
-    __tablename__ = 'scheduler_state'
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    mode: Mapped[str] = mapped_column(
-        String(30),
-        default='off',
-        index=True,
-    )
-    frequency: Mapped[str | None] = mapped_column(
-        String(20),
-        nullable=True,
-    )
-    last_check_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-    last_check_status: Mapped[str] = mapped_column(
-        String(40),
-        default='never',
-    )
-    current_balance_czk: Mapped[int] = mapped_column(
-        Integer,
-        default=0,
-    )
-    last_payout_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-    last_payout_status: Mapped[str | None] = mapped_column(
-        String(40),
-        nullable=True,
-    )
-    last_payout_amount_czk: Mapped[int | None] = mapped_column(
-        Integer,
-        nullable=True,
-    )
-    last_payout_reason: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
-
-
-class ExchangeRate(Base):
-    __tablename__ = 'exchange_rates'
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    source: Mapped[str] = mapped_column(
-        String(30),
-        default='coingecko',
-    )
-    czk_per_btc: Mapped[float] = mapped_column(Float)
-    fetched_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-    )
+    grade = relationship('Grade', back_populates='rewards')
 
 
 class Payout(Base):
     __tablename__ = 'payouts'
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ln_address: Mapped[str] = mapped_column(String(255))
-    amount_czk: Mapped[int] = mapped_column(Integer)
-    amount_sats: Mapped[int] = mapped_column(Integer)
-    exchange_rate_id: Mapped[int | None] = mapped_column(
-        ForeignKey('exchange_rates.id'),
-        nullable=True,
-    )
-    invoice: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
-    payment_hash: Mapped[str | None] = mapped_column(
-        String(255),
-        nullable=True,
-        unique=True,
-    )
-    status: Mapped[str] = mapped_column(
-        String(30),
-        default='pending',
-        index=True,
-    )
-    error_message: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
-    idempotency_key: Mapped[str] = mapped_column(
-        String(64),
-        unique=True,
-        index=True,
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
+    id = Column(Integer, primary_key=True)
+    ln_address = Column(String, nullable=False)
+    amount_czk = Column(Integer, nullable=False)
+    amount_sats = Column(Integer, nullable=False)
+    status = Column(String, default='pending', nullable=False)
+    idempotency_key = Column(String, unique=True, nullable=False)
+    invoice = Column(String, nullable=True)
+    payment_hash = Column(String, nullable=True)
+    error_message = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+
+    audit_events = relationship(
+        'PayoutAudit',
+        back_populates='payout',
+        cascade='all, delete-orphan',
     )
 
 
 class PayoutAudit(Base):
-    __tablename__ = 'payout_audit'
+    __tablename__ = 'payout_audits'
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    payout_id: Mapped[int] = mapped_column(
-        ForeignKey('payouts.id'),
-        index=True,
+    id = Column(Integer, primary_key=True)
+    payout_id = Column(
+        Integer,
+        ForeignKey('payouts.id', ondelete='CASCADE'),
+        nullable=False,
     )
-    event: Mapped[str] = mapped_column(String(40), index=True)
-    details: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-    )
+    event = Column(String, nullable=False)
+    details = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    payout = relationship('Payout', back_populates='audit_events')
