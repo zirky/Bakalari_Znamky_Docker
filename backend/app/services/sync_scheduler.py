@@ -57,7 +57,7 @@ def _recover_stale_run(
     if state.sync_started_at is None:
         state.sync_status = 'failed'
         state.last_sync_error = (
-            'Nalezen neúplný synchronizační běh bez času zahájení.'
+            'Nalezen neÃºplnÃ½ synchronizaÄ·nÃ¬ bÄºh bez Ä�asu zahÃ¡jenÃ¬.'
         )
         state.consecutive_failures = int(
             state.consecutive_failures or 0
@@ -73,7 +73,7 @@ def _recover_stale_run(
 
     state.sync_status = 'failed'
     state.last_sync_error = (
-        'Synchronizace byla označena jako neúspěšná po překročení '
+        'Synchronizace byla oznaÄ·ena jako neÃºspÄºÅ¡nÃ¡ po pÅ°ekroÄ·enÃ¬ '
         f'timeoutu {timeout_minutes} minut.'
     )
     state.sync_started_at = None
@@ -86,8 +86,8 @@ def _recover_stale_run(
 
 def _run_bakalari_sync(db: DbSession, state: SyncState) -> None:
     """
-    Spustí synchronizaci s Bakaláři.
-    Stejný kód jako v endpointu POST /api/parent/sync.
+    SpustÃ¬ synchronizaci s BakalÃ¡Å°i.
+    StejnÃ½ kÃ³d jako v endpointu POST /api/parent/sync.
     """
     requested_from_date = state.sync_from_date
 
@@ -225,8 +225,8 @@ def _run_bakalari_sync(db: DbSession, state: SyncState) -> None:
         db.commit()
 
         logger.info(
-            'Synchronizace úspěšně dokončena; nalezeno %d známek, '
-            'nových %d; další sync naplánován na %s',
+            'Synchronizace ÃspÄºÅ¡nÄº dokonÄ·ena; nalezeno %d znÃ¡mek, '
+            'novÃ½ch %d; dalÅ¡Ã¬ sync naplÃ¡novÃ¡n na %s',
             run.grades_found,
             run.grades_new,
             state.next_sync_at.isoformat() if state.next_sync_at else 'N/A',
@@ -252,14 +252,31 @@ def _run_bakalari_sync(db: DbSession, state: SyncState) -> None:
         )
         raise
 
+    # Po ÃspÄºÅ¡nÃ©m naÄ·tenÃ¬ znÃ¡mek zkontrolovat a spustit payout
+    try:
+        from .payout_scheduler import check_and_run_payout
+        
+        if check_and_run_payout(db, state):
+            logger.info('AutomatickÃ½ payout ÃspÄºÅ¡nÄº dokonÄ·en')
+        else:
+            logger.debug('Payout nebyl spuÅ¡tÄºn - nesplnÄºny podmÃ¬nky')
+    
+    except Exception as exc:
+        logger.exception(
+            'Kontrola payoutu selhala: %s',
+            str(exc),
+        )
+        # Nezastavovat celou synchronizaci kvÅ¯li payoutu
+        db.commit()
+
 
 def check_sync_scheduler() -> None:
     """
     Kontrola scheduleru synchronizace.
 
-    - Označí zaseknutý běh jako failed.
-    - Pokud je next_sync_at v minulosti a interval není 'manual',
-      spustí synchronizaci s Bakaláři.
+    - OznaÄ·Ã¬ zaseknutÃ½ bÄºh jako failed.
+    - Pokud je next_sync_at v minulosti a interval nenÃ¬ 'manual',
+      spustÃ¬ synchronizaci s BakalÃ¡Å°i.
     """
     db = SessionLocal()
 
@@ -279,12 +296,12 @@ def check_sync_scheduler() -> None:
 
         if interval not in {'manual', 'weekly', 'monthly'}:
             logger.warning(
-                'Neplatný sync_interval %r; automatická synchronizace '
-                'zůstává vypnutá.',
+                'NeplatnÃ½ sync_interval %r; automatickÃ¡ synchronizace '
+                'zÅ¯stÃ¡vÃ¡ vypnutÃ¡.',
                 interval,
             )
 
-        # Zkontroluj, zda je čas spustit synchronizaci
+        # Zkontroluj, zda je Ä�as spustit synchronizaci
         if (
             interval in {'weekly', 'monthly'}
             and state.next_sync_at is not None
@@ -292,7 +309,7 @@ def check_sync_scheduler() -> None:
             and state.sync_status != 'running'
         ):
             logger.info(
-                'Synchronizace je naplánovaná na %s; spouštím...',
+                'Synchronizace je naplÃ¡novanÃ¡ na %s; spouÅ¡tÃ¬m...',
                 state.next_sync_at.isoformat(),
             )
             _run_bakalari_sync(db, state)
@@ -319,7 +336,7 @@ async def run_sync_scheduler() -> None:
     )
 
     logger.info(
-        'Worker synchronizace byl spuštěn; kontrolní interval: %s s.',
+        'Worker synchronizace byl spuÅ¡tÄºn; kontrolnÃ¬ interval: %s s.',
         poll_seconds,
     )
 
@@ -328,5 +345,5 @@ async def run_sync_scheduler() -> None:
             check_sync_scheduler()
             await asyncio.sleep(poll_seconds)
     except asyncio.CancelledError:
-        logger.info('Worker synchronizace byl ukončen.')
+        logger.info('Worker synchronizace byl ukonÄ·en.')
         raise
