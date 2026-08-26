@@ -1,7 +1,7 @@
 from datetime import date
 
 from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import get_settings
 
@@ -12,8 +12,8 @@ class Base(DeclarativeBase):
 
 settings = get_settings()
 connect_args = (
-    {"check_same_thread": False}
-    if settings.database_url.startswith("sqlite")
+    {'check_same_thread': False}
+    if settings.database_url.startswith('sqlite')
     else {}
 )
 engine = create_engine(
@@ -25,6 +25,32 @@ SessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
 )
+
+
+def _table_columns(table_name: str) -> set[str]:
+    inspector = inspect(engine)
+    if table_name not in inspector.get_table_names():
+        return set()
+    return {column['name'] for column in inspector.get_columns(table_name)}
+
+
+def _add_missing_columns(
+    table_name: str,
+    additions: tuple[tuple[str, str], ...],
+) -> None:
+    columns = _table_columns(table_name)
+    if not columns:
+        return
+
+    with engine.begin() as connection:
+        for column_name, sql_type in additions:
+            if column_name not in columns:
+                connection.execute(
+                    text(
+                        f'ALTER TABLE {table_name} '
+                        f'ADD COLUMN {column_name} {sql_type}'
+                    )
+                )
 
 
 def _migrate_existing_schema() -> None:
@@ -81,53 +107,80 @@ def _migrate_existing_schema() -> None:
                     'WHERE id = :id'
                 ),
                 {
-                    'school_year': school_year_for_date(
-                        grade_date
-                    ),
+                    'school_year': school_year_for_date(grade_date),
                     'id': row['id'],
                 },
             )
 
 
 def _migrate_sync_state_schema() -> None:
-    inspector = inspect(engine)
-
-    if 'sync_state' not in inspector.get_table_names():
-        return
-
-    columns = {
-        column['name']
-        for column in inspector.get_columns('sync_state')
-    }
-
     additions = (
+        ('next_sync_at', 'DATETIME'),
+        ('sync_started_at', 'DATETIME'),
+        ('last_sync_error', 'TEXT'),
+        ('consecutive_failures', 'INTEGER NOT NULL DEFAULT 0'),
+    )
+    _add_missing_columns('sync_state', additions)
+
+
+def _migrate_auth_schema() -> None:
+    _add_missing_columns(
+        'auth_users',
         (
-            'next_sync_at',
-            'DATETIME',
+            ('created_at', 'DATETIME'),
+            ('last_login_at', 'DATETIME'),
         ),
+    )
+    _add_missing_columns(
+        'sessions',
         (
-            'sync_started_at',
-            'DATETIME',
-        ),
-        (
-            'last_sync_error',
-            'TEXT',
-        ),
-        (
-            'consecutive_failures',
-            'INTEGER NOT NULL DEFAULT 0',
+            ('last_activity_at', 'DATETIME'),
         ),
     )
 
     with engine.begin() as connection:
-        for column_name, sql_type in additions:
-            if column_name not in columns:
-                connection.execute(
-                    text(
-                        'ALTER TABLE sync_state '
-                        f'ADD COLUMN {column_name} {sql_type}'
-                    )
+        auth_columns = _table_columns('auth_users')
+        if 'created_at' in auth_columns:
+            connection.execute(
+                text(
+                    'UPDATE auth_users SET created_at = CURRENT_TIMESTAMP '
+                    'WHERE created_at IS NULL'
                 )
+            )
+
+        session_columns = _table_columns('sessions')
+        if 'last_activity_at' in session_columns:
+            connection.execute(
+                text(
+                    'UPDATE sessions SET last_activity_at = CURRENT_TIMESTAMP '
+                    'WHERE last_activity_at IS NULL'
+                )
+            )
+
+
+def _migrate_payout_schema() -> None:
+    _add_missing_columns(
+        'payouts',
+        (
+            ('exchange_rate_id', 'INTEGER'),
+        ),
+    )
+    _add_missing_columns(
+        'reward_rules',
+        (
+            ('updated_at', 'DATETIME'),
+        ),
+    )
+
+    with engine.begin() as connection:
+        columns = _table_columns('reward_rules')
+        if 'updated_at' in columns:
+            connection.execute(
+                text(
+                    'UPDATE reward_rules SET updated_at = CURRENT_TIMESTAMP '
+                    'WHERE updated_at IS NULL'
+                )
+            )
 
 
 def init_db() -> None:
@@ -136,3 +189,13 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _migrate_existing_schema()
     _migrate_sync_state_schema()
+    _migrate_auth_schema()
+    _migrate_payout_schema()
+
+
+def get_db():
+    db: Session = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
