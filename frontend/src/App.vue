@@ -41,6 +41,9 @@ const syncMessage = ref('')
 const backendAvailable = ref(true)
 const childTab = ref('averages')
 
+// Uložení aktuálního režimu pro detekci změn
+let previousPayoutMode = 'disabled'
+
 const IDLE_MS = 60000
 let idleTimer = null
 let logoutInProgress = false
@@ -163,6 +166,7 @@ async function loadParentSection() {
 
     if (active.value === 'payout') {
       settings.value = await getJson('/api/parent/settings')
+      previousPayoutMode = settings.value.payout_mode || 'disabled'
       await loadPayoutPreview()
       await loadPayouts()
     }
@@ -170,10 +174,12 @@ async function loadParentSection() {
     if (active.value === 'sync') {
       await loadSyncStatus()
       settings.value = await getJson('/api/parent/settings')
+      previousPayoutMode = settings.value.payout_mode || 'disabled'
     }
 
     if (active.value === 'settings') {
       settings.value = await getJson('/api/parent/settings')
+      previousPayoutMode = settings.value.payout_mode || 'disabled'
     }
   } catch (error) {
     if (error.message.includes('HTTP 401')) {
@@ -512,12 +518,38 @@ function payoutStatusLabel(status) {
 async function saveSettings() {
   message.value = ''
 
+  const oldMode = previousPayoutMode
+  const newMode = settings.value.payout_mode
+
+  const isModeChangeToAuto =
+    (oldMode === 'disabled' || oldMode === 'manual') &&
+    (newMode === 'draft' || newMode === 'scheduler')
+
+  if (isModeChangeToAuto) {
+    const isDraft = newMode === 'draft'
+    const confirmMessage = isDraft
+      ? 'Opravdu chcete zapnout režim "draft"? Po každé úspěšné plánované synchronizaci bude vytvořen návrh výplaty, ale žádná platba nebude odeslána.'
+      : 'Opravdu chcete zapnout režim "scheduler"? Po každé úspěšné plánované synchronizaci může být automaticky odeslána Lightning platba na vaši uloženou LN adresu.'
+
+    if (!confirm(confirmMessage)) {
+      // Uživatel zrušil - vrátíme původní režim
+      settings.value.payout_mode = oldMode
+      message.value = 'Změna režimu výplaty byla zrušena.'
+      return
+    }
+  }
+
   const payload = {
     start_date: settings.value.start_date,
     sync_interval: settings.value.sync_interval,
     payout_threshold_czk: settings.value.payout_threshold_czk,
     ln_address: settings.value.ln_address,
     payout_mode: settings.value.payout_mode
+  }
+
+  // Poslat potvrzení pouze při změně na draft/scheduler
+  if (isModeChangeToAuto) {
+    payload.auto_payout_confirmed = true
   }
 
   if (!validLnAddress(payload.ln_address)) {
@@ -530,6 +562,9 @@ async function saveSettings() {
       method: 'PUT',
       body: JSON.stringify(payload)
     })
+
+    // Aktualizovat previousPayoutMode po úspěšném uložení
+    previousPayoutMode = settings.value.payout_mode
 
     await loadParentSection()
     message.value = 'Nastavení uloženo.'
