@@ -16,6 +16,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 
 Base = declarative_base()
