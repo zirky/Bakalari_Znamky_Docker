@@ -183,6 +183,16 @@ def _migrate_payout_schema() -> None:
             )
 
 
+def _migrate_scheduler_state_schema() -> None:
+    """Přidá auto_payout_confirmed do scheduler_state, pokud chybí."""
+    _add_missing_columns(
+        'scheduler_state',
+        (
+            ('auto_payout_confirmed', 'BOOLEAN NOT NULL DEFAULT 0'),
+        ),
+    )
+
+
 def init_db() -> None:
     from . import models  # noqa: F401
 
@@ -191,6 +201,7 @@ def init_db() -> None:
     _migrate_sync_state_schema()
     _migrate_auth_schema()
     _migrate_payout_schema()
+    _migrate_scheduler_state_schema()  # ← Nová migrace
 
 
 def get_db():
