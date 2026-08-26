@@ -49,6 +49,7 @@ class SettingsIn(BaseModel):
     payout_threshold_czk: int = 100
     ln_address: str = ''
     payout_mode: str = 'disabled'
+    auto_payout_confirmed: bool = False
 
 
 class PayoutDraftIn(BaseModel):
@@ -393,6 +394,7 @@ def save_settings(
     _: object = Depends(current_parent),
     db: DbSession = Depends(get_db),
 ):
+    # 1. Kontrola platnosti payout_mode
     if payload.payout_mode not in {
         'disabled',
         'draft',
@@ -404,6 +406,7 @@ def save_settings(
             'Neplatný režim výplaty',
         )
 
+    # 2. Kontrola platnosti sync_interval
     if payload.sync_interval not in {
         'manual',
         'weekly',
@@ -414,6 +417,7 @@ def save_settings(
             'Neplatný interval synchronizace',
         )
 
+    # 3. Kontrola platnosti data
     try:
         date.fromisoformat(payload.start_date)
     except ValueError as exc:
@@ -422,14 +426,32 @@ def save_settings(
             'Neplatné počáteční datum synchronizace',
         ) from exc
 
+    # =========================================================
+    # 4. BEZPEČNOSTNÍ KONTROLA: Vyžadovat potvrzení pro draft/scheduler
+    # =========================================================
+    if payload.payout_mode in ('draft', 'scheduler'):
+        if not payload.auto_payout_confirmed:
+            raise HTTPException(
+                422,
+                'Zapnutí režimu draft/scheduler vyžaduje potvrzení.',
+            )
+    # =========================================================
+
     previous_interval = _get_setting(
         db,
         'sync_interval',
         'manual',
     )
 
+    # 5. Uložení běžných nastavení (kromě auto_payout_confirmed)
     for key, value in payload.model_dump().items():
+        if key == 'auto_payout_confirmed':
+            continue  # Toto pole se neukládá jako AppSetting
         _set_setting(db, key, str(value))
+
+    # 6. Uložení potvrzení jako samostatný flag (pokud je True)
+    if payload.auto_payout_confirmed:
+        _set_setting(db, 'auto_payout_confirmed', 'true')
 
     state = _get_sync_state(db)
 
