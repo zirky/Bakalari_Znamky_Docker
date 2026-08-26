@@ -1058,9 +1058,10 @@ onBeforeUnmount(() => {
         </p>
 
         <p>
-          Náhled ani draft neodesílají platbu.
-          Ostrá platba se odešle pouze po explicitním potvrzení
-          v režimu manual.
+          V režimu draft se po úspěšné synchronizaci vytvoří pouze návrh bez platby.
+  V režimu scheduler může po úspěšné synchronizaci dojít k automatickému odeslání
+  po ověření adresy, limitu, zůstatku a idempotence.
+  V režimu manual se platba odešle pouze po ručním potvrzení.
         </p>
 
         <button
@@ -1434,8 +1435,8 @@ onBeforeUnmount(() => {
             >
 
             <small>
-              Adresa se pouze uloží;
-              platby se nespouštějí automaticky.
+             Adresa se použije pro výplatu. V režimu scheduler může být platba
+  odeslána automaticky po úspěšné synchronizaci.
             </small>
           </label>
 
