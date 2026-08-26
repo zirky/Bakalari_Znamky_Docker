@@ -25,11 +25,40 @@ function installSettingsSubmit() {
     const interval = findField(form, ['interval_minutes', 'intervalMinutes', 'interval'], 1)
     const dailyLimit = findField(form, ['daily_limit', 'dailyLimit', 'limit'], 2)
     const lnAddress = findField(form, ['ln_address', 'lnAddress', 'lightning_address'], 3)
+    const payoutMode = findField(form, ['payout_mode', 'payoutMode'], 4)
+    
     const payload = {
       start_date: readValue(startDate),
       interval_minutes: Number(readValue(interval)),
       daily_limit: Number(readValue(dailyLimit)),
-      ln_address: readValue(lnAddress).trim()
+      ln_address: readValue(lnAddress).trim(),
+      payout_mode: readValue(payoutMode) || 'manual',
+    }
+
+    // Kontrola změny režimu a potvrzovací dialog
+    const oldMode = window.__currentPayoutMode || 'manual'
+    const newMode = payload.payout_mode
+    
+    const isModeChangeToAuto = 
+      (oldMode === 'disabled' || oldMode === 'manual') &&
+      (newMode === 'draft' || newMode === 'scheduler')
+    
+    if (isModeChangeToAuto) {
+      const isDraft = newMode === 'draft'
+      const message = isDraft
+        ? 'Opravdu chcete zapnout režim "draft"? Po každé úspěšné plánované synchronizaci bude vytvořen návrh výplaty, ale žádná platba nebude odeslána.'
+        : 'Opravdu chcete zapnout režim "scheduler"? Po každé úspěšné plánované synchronizaci může být automaticky odeslána Lightning platba na vaši uloženou LN adresu.'
+      
+      if (!confirm(message)) {
+        // Uživatel zrušil - vrátíme původní režim
+        if (payoutMode) payoutMode.value = oldMode
+        console.log('[settings] payout mode change cancelled')
+        return
+      }
+      
+      // Uživatel potvrdil - posíláme potvrzení
+      payload.auto_payout_confirmed = true
+      console.log('[settings] payout mode change confirmed:', newMode)
     }
 
     try {
@@ -59,6 +88,14 @@ function installSettingsSubmit() {
     }
   }, true)
 }
+
+// Uložení aktuálního režimu pro detekci změn
+document.addEventListener('DOMContentLoaded', () => {
+  const payoutModeField = document.querySelector('[name="payout_mode"], #payout_mode')
+  if (payoutModeField) {
+    window.__currentPayoutMode = payoutModeField.value || 'manual'
+  }
+})
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', installSettingsSubmit, { once: true })
