@@ -30,9 +30,16 @@ def token_hash(token: str) -> str:
 
 
 def ensure_parent(db: DbSession, configured_pin: str) -> None:
-    if not configured_pin or db.query(AuthUser).filter_by(role='parent').first():
+    """Vytvoří nebo aktualizuje parent user s PINem z .env"""
+    if not configured_pin:
         return
-    db.add(AuthUser(role='parent', pin_hash=pwd_context.hash(configured_pin)))
+    
+    user = db.query(AuthUser).filter_by(role='parent').first()
+    if user:
+        # Aktualizuj PIN z .env i když user už existuje
+        user.pin_hash = pwd_context.hash(configured_pin)
+    else:
+        db.add(AuthUser(role='parent', pin_hash=pwd_context.hash(configured_pin)))
     db.commit()
 
 
