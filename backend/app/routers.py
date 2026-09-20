@@ -606,11 +606,11 @@ def sync(
                 )
                 grade.active_in_sync = in_range
 
-            reward = db.query(Reward).filter_by(
+                       reward = db.query(Reward).filter_by(
                 grade_id=grade.id
             ).first()
 
-        normalized_grade = absolute_grade_value(
+            normalized_grade = absolute_grade_value(
                 grade.grade_value
             )
 
