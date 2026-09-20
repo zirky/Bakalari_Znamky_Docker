@@ -610,7 +610,7 @@ def sync(
                 grade_id=grade.id
             ).first()
 
-            normalized_grade = absolute_grade_value(
+        normalized_grade = absolute_grade_value(
                 grade.grade_value
             )
 
@@ -621,12 +621,6 @@ def sync(
                     grade_value=normalized_grade,
                     active=True,
                 ).first()
-
-if normalized_grade is not None:
-    rule = db.query(RewardRule).filter_by(
-        grade_value=normalized_grade,
-        active=True,
-    ).first()
 
             if not in_range:
                 if (
