@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
+from .grade_utils import absolute_grade_value
+
 from .auth import COOKIE_NAME, current_parent, delete_session, get_db
 from .models import (
     AppSetting,
@@ -608,10 +610,17 @@ def sync(
                 grade_id=grade.id
             ).first()
 
-            rule = db.query(RewardRule).filter_by(
-                grade_value=grade.grade_value,
-                active=True,
-            ).first()
+           normalized_grade = absolute_grade_value(
+    grade.grade_value
+)
+
+rule = None
+
+if normalized_grade is not None:
+    rule = db.query(RewardRule).filter_by(
+        grade_value=normalized_grade,
+        active=True,
+    ).first()
 
             if not in_range:
                 if (
@@ -1255,11 +1264,15 @@ def child_overview(
             'description': grade.description,
         })
 
-        if grade.grade_value in {'1', '2', '3', '4', '5'}:
-            subject_values.setdefault(
-                grade.subject,
-                [],
-            ).append(int(grade.grade_value))
+        normalized_grade = absolute_grade_value(
+    grade.grade_value
+)
+
+if normalized_grade is not None:
+    subject_values.setdefault(
+        grade.subject,
+        [],
+    ).append(int(normalized_grade))
 
     subjects = [
         {
