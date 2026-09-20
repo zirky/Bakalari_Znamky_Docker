@@ -1265,15 +1265,15 @@ def child_overview(
         })
 
         normalized_grade = absolute_grade_value(
-    grade.grade_value
-)
+            grade.grade_value
+        )
 
-if normalized_grade is not None:
-    subject_values.setdefault(
-        grade.subject,
-        [],
-    ).append(int(normalized_grade))
-
+        if normalized_grade is not None:
+            subject_values.setdefault(
+                grade.subject,
+                [],
+            ).append(int(normalized_grade))
+    
     subjects = [
         {
             'subject': subject,
