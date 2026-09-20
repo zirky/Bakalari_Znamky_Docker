@@ -13,6 +13,8 @@ from ..school_year import school_year_for_date
 from ..services.bakalari import BakalariService
 from ..services.sync_schedule import next_sync_at
 
+from ..grade_utils import absolute_grade_value
+
 
 logger = logging.getLogger(__name__)
 
@@ -149,10 +151,17 @@ def _run_bakalari_sync(db: DbSession, state: SyncState) -> None:
                 grade_id=grade.id
             ).first()
 
-            rule = db.query(RewardRule).filter_by(
-                grade_value=grade.grade_value,
-                active=True,
-            ).first()
+            normalized_grade = absolute_grade_value(
+    grade.grade_value
+)
+
+rule = None
+
+if normalized_grade is not None:
+    rule = db.query(RewardRule).filter_by(
+        grade_value=normalized_grade,
+        active=True,
+    ).first()
 
             if not in_range:
                 if (
