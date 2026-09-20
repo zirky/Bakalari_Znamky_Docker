@@ -1264,7 +1264,7 @@ def child_overview(
             'description': grade.description,
         })
 
-        normalized_grade = absolute_grade_value(
+                normalized_grade = absolute_grade_value(
             grade.grade_value
         )
 
