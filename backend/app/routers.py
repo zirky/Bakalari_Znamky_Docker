@@ -606,7 +606,7 @@ def sync(
                 )
                 grade.active_in_sync = in_range
 
-                       reward = db.query(Reward).filter_by(
+            reward = db.query(Reward).filter_by(
                 grade_id=grade.id
             ).first()
 
