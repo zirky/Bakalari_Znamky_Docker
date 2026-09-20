@@ -151,7 +151,7 @@ def _run_bakalari_sync(db: DbSession, state: SyncState) -> None:
                 grade_id=grade.id
             ).first()
 
-                        normalized_grade = absolute_grade_value(
+            normalized_grade = absolute_grade_value(
                 grade.grade_value
             )
 
